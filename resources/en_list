@@ -580,7 +580,7 @@ fyi	$abbrev
 ghz	gIg@h3:ts	$only
 gnupg	g@'nu:pi:dZ'i:
 guid	g'u:Id $only
-hmm	h@m
+hmm	'mmmmmmm:
 hiv	$abbrev
 (http ://)   eItSt2i:t2i:'pi:_
 ibm	$abbrev
@@ -964,6 +964,7 @@ archway		$1
 archy		A@tSi
 ardor		A@d3
 arena		a#ri:n@
+argh		'A:r
 argon		A@g0n
 argue		A@gju:
 aries		e@ri:z
@@ -1026,6 +1027,8 @@ avatar		ava#tA@
 ave		A:veI
 average		av@-rI2dZ
 awry		a#raI
+aww		'O:
+awww		'O:
 axes		aksI#z
 axon		aks0n
 ayuh		a#j'@
@@ -1127,7 +1130,7 @@ blancmange	bl@m0nZ
 blase		blA:z'eI
 blasé		blA:z'eI
 blech		blEx
-bleh		blEh
+bleh		blE
 blockade	bl0k'eId
 bloodrage	$alt1
 blouse		blaUz
@@ -1856,8 +1859,11 @@ every		$nounf
 everything	EvrI2TIN
 evildo		i:v@Ldu:
 evince		I#vIns
+ew		'i:w
 ewe		ju:
 eweek		$alt6
+eww		'i:w
+ewww		'i:w
 evening		i:vnIN
 evenings	i:vnINz
 evit		EvI#t          // inevitable
@@ -2115,7 +2121,7 @@ headachy	hEdeIki
 headfirst	$2
 hearsay		hi@3seI
 heebiejeeby     hi:bi:dZ'i:bi
-heh		hEh $only
+heh		hE $only
 hehe		hi:h'i:
 heifer		hEf3
 heinous		heIn@s
@@ -2149,12 +2155,25 @@ highfive	haIfaIv
 hindus		hIndu:z
 hiphop		$alt4
 hiya		haIa#
-hmmm		h'@m
+hmmm		'mmmmmmm::
+hmmmm		'mmmmmmm:::
+hmmmmm		'mmmmmmm::::
+hmmmmmm		'mmmmmmm:::::
+hmmmmmmm	'mmmmmmm::::::
 hmpf		h'@mpf
-mhm		m'@m
-mhmm		m'@m
-mmmm		m'@m
-mmmmm		m'@m
+hmph		'hVmf
+mhm		,mmm'hmmm
+mhmm		,mmm'hmmm
+mmhmm		,mmm'hmmm
+mm-hmm		,mmm'hmmm
+mmm		'mmmmmm
+mmmm		'mmmmmmm
+mmmmm		'mmmmmmm:
+mmmmmm		'mmmmmmm::
+mmmmmmm		'mmmmmmm:::
+pfft		pf't
+pff		pf
+tsk		t'Isk
 hola		'oUla
 holistic	$alt3
 holme		hoUm
@@ -3390,6 +3409,8 @@ sheriff		S'ErI2f
 shew		SoU
 shiitake	Si:t'A:keI
 shillelagh	S,I2l'eIl@
+shh		'S:
+shhh		'S:
 shiver		SIv3
 shone		S0n
 shoulder	SoUld3
@@ -3708,11 +3729,21 @@ ukulele		ju:k@l'eIli
 ul		Ul
 ultraviolet	$3
 umbrella	$2
-uhm		'Vm
-uhmm		'Vm
-uhmmm		'Vm
-ummm		'Vm
-ummmm		'Vm
+umm		'V:mm
+ummmmm		'V:mmmmm
+uh-huh		'Vh,V
+uh-oh		'V,oU
+uh-uh		'V?,V
+uh		'V:
+uhh		'V::
+uhhh		'V:::
+uhhhh		'V::::
+uhm		'V:mmm
+uhmm		'V:mmm
+uhmmm		'V:mmm
+uhmmmm		'V:mmmm
+ummm		'V:mmm
+ummmm		'V:mmmm
 unable		Vn'eIb@L
 unary		j'un@ri
 unaware		Vn@w'e@
@@ -3921,6 +3952,7 @@ ya		ja# $only
 yer		j3	$u+
 ye		ji:	$u+
 yea		jeI
+yeah		j'E@
 yes		jEs
 yessir		jEss3:
 ?5 yessir	jEssIR
