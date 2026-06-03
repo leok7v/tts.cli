@@ -19,27 +19,41 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Trace markers always print to stderr (Xcode's debug console picks
-// them up on iOS). Stage-scope only — a few dozen lines per chunk
-// at most — so the fprintf overhead is well under 1% of synth time.
-// Per-arena-alloc tracking remains internal to tensor.c.
+// Per-stage RSS tracing. Env-gated via TTS_TRACE_RSS=1 to keep
+// default runs silent; set the env var to see the per-stage
+// phys_footprint progression in Xcode debug console or stderr.
+// Aligned with talking.frog.devs/tts/kittens.c's trace shape; the
+// trace_rss macro here writes directly to stderr (we don't carry
+// that repo's trace/trace.h ring-buffer infrastructure).
 //
-// Legacy OOM_TRACE note: phys_footprint markers at each pipeline stage and inside
-// build_noise_contribs / build_hifi_block. Reads task_info's
-// phys_footprint, the field iOS jetsam uses. Compile with -DOOM_TRACE
-// to enable; default builds are silent. See PLAN/TODO for what the
-// numbers mean (macOS compressor lag inflates reading; instantaneous
-// working set is the per-stage delta).
+// Per-arena-alloc tracking remains internal to tensor.c. Per-
+// hifi-block fprintfs further down are unconditional — they're
+// useful enough during memory work that silencing them by default
+// would defeat the purpose.
+#include <stdbool.h>
 #include <mach/mach.h>
-static double oom_mb(void) {
+
+static double rss_mb(void) {
     struct task_vm_info info; mach_msg_type_number_t n = TASK_VM_INFO_COUNT;
     return task_info(mach_task_self(), TASK_VM_INFO,
                      (task_info_t)&info, &n) == KERN_SUCCESS
         ? (double)info.phys_footprint / (1024.0 * 1024.0) : 0.0;
 }
-#define OOM_MARK(stage) fprintf(stderr, \
-    "  [OOM %-26s L=%-4d F=%-5d phys=%7.1f MB]\n", \
-    stage, L, F, oom_mb())
+
+static bool is_trace_rss_enabled(void) {
+    static int enabled = -1;
+    if (enabled == -1) {
+        const char * v = getenv("TTS_TRACE_RSS");
+        enabled = (v != NULL && v[0] != 0 && v[0] != '0') ? 1 : 0;
+    }
+    return enabled;
+}
+
+#define trace_rss(tag) do {                                          \
+    if (is_trace_rss_enabled()) {                                    \
+        fprintf(stderr, "[RSS %-24s] %.2f MB\n", tag, rss_mb());     \
+    }                                                                \
+} while(0)
 
 // ---------------------------------------------------------------------------
 // Arch + weights (internal; loaded from GGUF at ctx-create time)
@@ -900,7 +914,7 @@ static struct tensor * build_hifi_block(struct kittens_ctx * ctx,
     struct savept px0 = save(x);
     arena_reset(sa);
     fprintf(stderr, "    [OOM hifi2-entry %-9s L=%-6lld phys=%7.1f MB]\n",
-            prefix, (long long)L, oom_mb());
+            prefix, (long long)L, rss_mb());
     // Small inputs fall through to the same one-segment path as the
     // non-segmented version — peeling the loop is more overhead than
     // segmentation saves below the SEG_L+2*OVERLAP threshold.
@@ -1066,7 +1080,7 @@ static struct tensor * build_hifi_block(struct kittens_ctx * ctx,
                 a = b;
             }
             fprintf(stderr, "    [OOM hifi2-k%d-end %-9s     phys=%7.1f MB]\n",
-                    k, prefix, oom_mb());
+                    k, prefix, rss_mb());
         }
         // Materialize the residual stream as an arena tensor.
         arena_reset(sa);
@@ -1128,7 +1142,7 @@ static struct tensor * build_hifi_block(struct kittens_ctx * ctx, const char * p
     style = restore(sa, &ps);
     savept_free(&px0);
     fprintf(stderr, "    [OOM hifi-entry  %-9s     phys=%7.1f MB]\n",
-            prefix, oom_mb());
+            prefix, rss_mb());
     for (int k = 0; k < 3; k++) {
         if (k > 0) {
             struct savept po = save(out);
@@ -1168,7 +1182,7 @@ static struct tensor * build_hifi_block(struct kittens_ctx * ctx, const char * p
         // or runs the k>0 save/reset which clears everything.
         out = tensor_add(out, h);
         fprintf(stderr, "    [OOM hifi-k%d-end %-9s     phys=%7.1f MB]\n",
-                k, prefix, oom_mb());
+                k, prefix, rss_mb());
     }
     savept_free(&ps);
     return out;
@@ -1480,17 +1494,15 @@ static struct noise_outs build_noise_contribs(struct kittens_ctx * ctx,
     const int T_audio  = T_frames * hop;
     const float sr     = 24000.0f;
     const float two_pi = 2.0f * (float)M_PI;
-    // OOM_MARK uses L in its format; noise_contribs has no phoneme L,
-    // so feed 0 as a placeholder.
-    const int L = 0; (void)T_audio;
-    OOM_MARK("noise:entry");
+    (void)T_audio;
+    trace_rss("noise:entry");
     // f0_audio: nearest-neighbor upsample (1, 2F) -> (1, T_audio).
     struct tensor * f0_3d  = tensor_reshape_3d(f0_proj, 1, 1, T_frames);
     struct tensor * f0_audio_3d = tensor_repeat_to(f0_3d, 3,
                                                    1, hop, T_frames, 1);
     struct tensor * f0_audio = tensor_reshape_2d(f0_audio_3d, 1, T_audio);
     struct tensor * voiced = tensor_step(f0_audio);
-    OOM_MARK("noise:f0+voiced");
+    trace_rss("noise:f0+voiced");
     // f0_per_frame[h, t] = f0_proj[t] * (h+1). Repeat (1, 2F) -> (9, 2F).
     struct tensor * f0_repeated = tensor_repeat_to(f0_proj, 2,
                                                    9, T_frames, 1, 1);
@@ -1503,7 +1515,7 @@ static struct noise_outs build_noise_contribs(struct kittens_ctx * ctx,
     struct tensor * ps_ncl   = tensor_sub(cs, step_ncl);
     ps_ncl = tensor_scale(ps_ncl, two_pi);
     struct tensor * phase_start_nlc = tensor_cont(tensor_transpose(ps_ncl));
-    OOM_MARK("noise:phase_start");
+    trace_rss("noise:phase_start");
     // phase_within[h, t, s] = f0_per_frame[h, t] * s * (2π/sr)
     struct tensor * fpf_3d = tensor_reshape_3d(f0_per_frame, 9, T_frames, 1);
     struct tensor * s_3d   = tensor_reshape_3d(s_range, 1, 1, hop);
@@ -1511,33 +1523,33 @@ static struct noise_outs build_noise_contribs(struct kittens_ctx * ctx,
     struct tensor * s_x    = tensor_repeat_to(s_3d,   3, 9, T_frames, hop, 1);
     struct tensor * within = tensor_mul(fpf_x, s_x);
     within = tensor_scale(within, two_pi / sr);
-    OOM_MARK("noise:within(9,2F,hop)");
+    trace_rss("noise:within(9,2F,hop)");
     struct tensor * ps_3d = tensor_reshape_3d(phase_start_nlc,
                                               9, T_frames, 1);
     struct tensor * ps_expanded = tensor_repeat_to(ps_3d, 3,
                                                    9, T_frames, hop, 1);
     struct tensor * phase = tensor_add(ps_expanded, within);
-    OOM_MARK("noise:phase");
+    trace_rss("noise:phase");
     phase = tensor_permute(phase, 0, 2, 1, 3);     // (9, hop, 2F)
     phase = tensor_cont(phase);
     phase = tensor_reshape_2d(phase, 9, T_audio);
-    OOM_MARK("noise:phase-perm");
+    trace_rss("noise:phase-perm");
     struct tensor * sines = tensor_scale(tensor_sin(phase), 0.1f);
     struct tensor * sin_gen = tensor_mul(sines, voiced);
-    OOM_MARK("noise:sin_gen");
+    trace_rss("noise:sin_gen");
     struct tensor * l_lin_w = named_fmt(ctx, "l_lin.weight");
     struct tensor * l_lin_b = named_fmt(ctx, "l_lin.bias");
     struct tensor * mixed = tensor_add(
         tensor_mul_mat(l_lin_w, sin_gen), l_lin_b);
     struct tensor * excitation = tensor_tanh(mixed);
-    OOM_MARK("noise:excitation");
+    trace_rss("noise:excitation");
     struct tensor * stft_fr = named_fmt(ctx, "stft_fwd.real");
     struct tensor * stft_fi = named_fmt(ctx, "stft_fwd.imag");
     struct tensor * stft_real = conv1d_nlc(excitation, stft_fr,
                                            NULL, 5, 10, 1);
     struct tensor * stft_imag = conv1d_nlc(excitation, stft_fi,
                                            NULL, 5, 10, 1);
-    OOM_MARK("noise:stft");
+    trace_rss("noise:stft");
     struct tensor * re2 = tensor_mul(stft_real, stft_real);
     struct tensor * im2 = tensor_mul(stft_imag, stft_imag);
     struct tensor * mag2 = tensor_add(re2, im2);
@@ -1551,7 +1563,7 @@ static struct noise_outs build_noise_contribs(struct kittens_ctx * ctx,
     struct tensor * nc1_b = named_fmt(ctx, "nc1.bias");
     struct tensor * nc0 = conv1d_nlc(stft_out, nc0_w, nc0_b, 6, 3, 1);
     struct tensor * nc1 = conv1d_nlc(stft_out, nc1_w, nc1_b, 1, 0, 1);
-    OOM_MARK("noise:nc0+nc1");
+    trace_rss("noise:nc0+nc1");
     // build_hifi_block now does save+arena_reset at entry, so we only
     // need to preserve what we need AFTER its first call: nc1 (input
     // to second hifi block) and style_aco (input to both). nc0 is
@@ -1559,12 +1571,12 @@ static struct noise_outs build_noise_contribs(struct kittens_ctx * ctx,
     struct savept p_nc1 = save(nc1);
     struct savept p_sty = save(style_aco);
     struct tensor * nr0 = build_hifi_block(ctx, "nr0", nc0, style_aco);
-    OOM_MARK("noise:hifi-nr0");
+    trace_rss("noise:hifi-nr0");
     struct savept p_nr0 = save(nr0);
     nc1       = restore(sa, &p_nc1);
     style_aco = restore(sa, &p_sty);
     struct tensor * nr1 = build_hifi_block(ctx, "nr1", nc1, style_aco);
-    OOM_MARK("noise:hifi-nr1");
+    trace_rss("noise:hifi-nr1");
     nr0 = restore(sa, &p_nr0);
     savept_free(&p_nc1);
     savept_free(&p_sty);
@@ -1693,7 +1705,7 @@ struct kittens_audio kittens_synthesize(struct kittens_ctx * ctx,
     int F = 0;
     const struct arch * A = &ctx->arch;
     struct arena * sa = ctx->scratch_arena;
-    OOM_MARK("entry");
+    trace_rss("entry");
     // CRITICAL: redirect ALL op outputs into the scratch arena.
     // Without this, ops whose first input is a model weight (q_w,
     // ffn_w, embedding tables, ...) allocate their output in
@@ -1743,7 +1755,7 @@ struct kittens_audio kittens_synthesize(struct kittens_ctx * ctx,
         memcpy(text_h,    ts.text->data,       sizeof(float) * 128 * L);
         memcpy(dur_h,     ts.dur_sig->data,    sizeof(float) *  50 * L);
     }
-    OOM_MARK("after-stage1");
+    trace_rss("after-stage1");
     // ---- Length regulation ----
     durs = (int *)malloc(sizeof(int) * L);
     F = 0;
@@ -1798,7 +1810,7 @@ struct kittens_audio kittens_synthesize(struct kittens_ctx * ctx,
         memcpy(np_h,  g.n_proj->data,  sizeof(float) * 2 * F);
     }
     free(prosody_lr_h); prosody_lr_h = NULL;
-    OOM_MARK("after-stage2");
+    trace_rss("after-stage2");
     // ---- Stage 3: Decoder ----
     arena_reset(sa);
     {
@@ -1817,7 +1829,7 @@ struct kittens_audio kittens_synthesize(struct kittens_ctx * ctx,
     }
     free(text_lr_h); text_lr_h = NULL;
     free(np_h);      np_h      = NULL;
-    OOM_MARK("after-stage3");
+    trace_rss("after-stage3");
     // ---- Stage 4a: Noise contributions ----
     // Run noise_contribs to completion, copy nr0/nr1 to host buffers,
     // then reset the arena so all the noise intermediates (sine
@@ -1855,7 +1867,7 @@ struct kittens_audio kittens_synthesize(struct kittens_ctx * ctx,
         memcpy(nr0_h, nz.nr0->data, (size_t)nr0_n * sizeof(float));
         memcpy(nr1_h, nz.nr1->data, (size_t)nr1_n * sizeof(float));
     }
-    OOM_MARK("after-stage4a");
+    trace_rss("after-stage4a");
     // ---- Stage 4b: Generator + iSTFT ----
     int n = 0;
     arena_reset(sa);
@@ -1883,7 +1895,7 @@ struct kittens_audio kittens_synthesize(struct kittens_ctx * ctx,
         audio_buf = (float *)malloc(sizeof(float) * (size_t)n);
         memcpy(audio_buf, audio_t->data, sizeof(float) * (size_t)n);
     }
-    OOM_MARK("after-stage4b");
+    trace_rss("after-stage4b");
     free(nr0_h); free(nr1_h);
     free(f0p_h); f0p_h = NULL;
     free(dec_h); dec_h = NULL;
