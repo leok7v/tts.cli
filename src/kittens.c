@@ -19,13 +19,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-// OOM_TRACE: phys_footprint markers at each pipeline stage and inside
+// Trace markers always print to stderr (Xcode's debug console picks
+// them up on iOS). Stage-scope only — a few dozen lines per chunk
+// at most — so the fprintf overhead is well under 1% of synth time.
+// Per-arena-alloc tracking remains internal to tensor.c.
+//
+// Legacy OOM_TRACE note: phys_footprint markers at each pipeline stage and inside
 // build_noise_contribs / build_hifi_block. Reads task_info's
 // phys_footprint, the field iOS jetsam uses. Compile with -DOOM_TRACE
 // to enable; default builds are silent. See PLAN/TODO for what the
 // numbers mean (macOS compressor lag inflates reading; instantaneous
 // working set is the per-stage delta).
-#ifdef OOM_TRACE
 #include <mach/mach.h>
 static double oom_mb(void) {
     struct task_vm_info info; mach_msg_type_number_t n = TASK_VM_INFO_COUNT;
@@ -36,9 +40,6 @@ static double oom_mb(void) {
 #define OOM_MARK(stage) fprintf(stderr, \
     "  [OOM %-26s L=%-4d F=%-5d phys=%7.1f MB]\n", \
     stage, L, F, oom_mb())
-#else
-#define OOM_MARK(stage) ((void)0)
-#endif
 
 // ---------------------------------------------------------------------------
 // Arch + weights (internal; loaded from GGUF at ctx-create time)
@@ -727,6 +728,388 @@ static void savept_free(struct savept * p) {
     if (p && p->data) { free(p->data); p->data = NULL; }
 }
 
+// ===========================================================================
+// build_hifi_block has TWO implementations, picked at compile time:
+//
+//   default                  — two-pass global-stats segmented. Peak
+//                              memory drops a further ~30% on top of
+//                              intra-k (~60% off the original baseline),
+//                              wall-clock is ~7% FASTER because pass B
+//                              reads the assembled h3 host buffer
+//                              instead of recomputing AdaIN1+snake+conv1.
+//                              Audio is audibly identical: log-STFT L1
+//                              ~0.008 (≪0.05 audible threshold),
+//                              PSNR ~100 dB, Pearson 1.000000, RMS
+//                              matches baseline to 4 decimal places.
+//                              The tiny residual divergence is fp32
+//                              vDSP reduction order between a
+//                              stride-C gather and the original's
+//                              channel-major contiguous row.
+//
+//   -DHIFI_INTRA_K_ONLY      — fall back to intra-k save/reset only.
+//                              Bit-identical to the prior shipped
+//                              path (cf. commit fd53535). Use to A/B
+//                              if you suspect the two-pass version.
+//
+// Two-pass is the default ship path. Flip one -D for the fallback.
+// ===========================================================================
+
+#ifndef HIFI_INTRA_K_ONLY
+// ---------------------------------------------------------------------------
+// Two-pass segmented HiFi-GAN resblock — global-stats AdaIN.
+//
+// AdaIN's tensor_norm is instance-norm along the time axis: per channel,
+// (x - mean(x_c)) / std(x_c). Mean/std reduce over the full L, so the
+// op is non-local in time and simple overlap-add segmentation produces
+// the wrong answer (a previous attempt's audio diverged ~14% RMS).
+//
+// Two-pass fix:
+//   Pass A: loop over input segments, run AdaIN1 -> snake -> conv1 on
+//           each, accumulate per-channel sum + sum-of-squares of the
+//           clean middle of the post-conv1 tensor into running totals,
+//           then DISCARD the segment output. After the loop, finalize
+//           the global mean/istd of h3 (= conv1's output) per channel.
+//   Pass B: loop over segments again. Now we have both AdaIN1's input
+//           stats (from out_host) AND AdaIN2's input stats (from pass A),
+//           so the full chain (AdaIN1 -> snake -> conv1 -> AdaIN2 ->
+//           snake -> conv2) runs segment-by-segment with mathematically
+//           correct global statistics. Write h6's clean middle directly
+//           into out_host with the residual add.
+//   Repeat for k=0,1,2.
+//
+// Per-segment peak ≈ a few (C, seg_W+2*overlap) tensors ≈ tens of MB
+// regardless of how large L gets — the target ~30-50 MB win.
+//
+// Tunables: SEG_L is the clean-middle width per segment, OVERLAP is
+// the context window on each side (must exceed the conv stack's
+// receptive field on the kept positions). RF per side inside one k
+// stack = max_d * (K1-1) + (K2-1).
+//
+// In this model the conv kernels differ by hifi_block instance:
+//   gen.r0..r3 use K1=K2=3                  -> RF = 5*2 + 2 = 12
+//   nr0        uses K1=K2=7  (noise pre-r0) -> RF = 5*6 + 6 = 36
+//   nr1        uses K1=K2=11 (noise pre-r2) -> RF = 5*10 + 10 = 60
+//
+// OVERLAP=128 leaves 2x margin even on the K=11 case. (An earlier
+// OVERLAP=32 was big enough for gen.* but too small for nr1; the
+// boundary samples inside the 60-position RF were computed from
+// truncated context, drifting AdaIN2's input stats and audibly
+// degrading the output. log-STFT L1 0.108. With OVERLAP=128 the
+// clean middles are fully covered.)
+// ---------------------------------------------------------------------------
+
+#define HIFI_SEG_L         1024
+#define HIFI_SEG_OVERLAP    128
+
+// Per-channel mean and 1/std from a host buffer of shape (L, C)
+// channels-inner. CRITICAL: must match tensor_norm's fp32 algorithm
+// byte-for-byte, including its catastrophic-cancellation behaviour in
+// var = E[x^2] - E[x]^2.
+//
+// Why: tensor_norm in cpu/tensor.c uses vDSP_meanv/vDSP_measqv (fp32
+// SIMD reductions over a contiguous N-element row) and computes
+// var = meanSq - mean*mean in fp32. snake_1d adds a strictly
+// non-negative DC term every layer, so channels accumulate a large
+// |mean|/std ratio and the fp32 subtraction loses precision. The
+// baseline audio is the result of that biased istd. A "more
+// accurate" fp64 var produces a true value, larger by a fraction
+// of a percent on the worst channels, giving a slightly smaller
+// istd. Compounded across many AdaIN layers, the output drifts
+// uniformly quieter (Pearson 0.95, RMS -5.5%, log-STFT L1 0.108
+// in measurement). So precision-matching is REQUIRED for parity.
+//
+// Match the layout too: tensor_norm sees x_t as (L, C) with ne[0]=L
+// (channel-outer in memory) and reduces per channel over a
+// contiguous L-element row. Our host buffer is the opposite
+// (channels-inner). Gather channel c into `tmp` then run the same
+// stride-1 vDSP reduction — identical kernel, identical bit output.
+static void hifi_compute_stats_host(const float * host, int C, int64_t L,
+                                    float * mean, float * istd) {
+    float * tmp = (float *)malloc((size_t)L * sizeof(float));
+    assert(tmp != NULL);
+    const int64_t Cs = (int64_t)C;
+    int c = 0;
+    while (c < C) {
+        int64_t t = 0;
+        while (t < L) { tmp[t] = host[t * Cs + c]; t++; }
+        float m, msq;
+        vDSP_meanv (tmp, 1, &m,   (vDSP_Length)L);
+        vDSP_measqv(tmp, 1, &msq, (vDSP_Length)L);
+        const float var = msq - m * m;
+        mean[c] = m;
+        istd[c] = 1.0f / sqrtf(var + 1e-5f);
+        c++;
+    }
+    free(tmp);
+}
+
+// AdaIN variant taking precomputed global per-channel (mean, istd).
+// Same math as ada_in_1d except the in-place tensor_norm step
+// (mean/var computed locally over time) is replaced with a broadcast
+// affine: n = (x - mean) * istd. mean/istd are (C,) tensors so they
+// broadcast over the L axis of x. The downstream nW, nB, gamma, beta
+// chain is unchanged.
+static struct tensor * ada_in_1d_with_stats(struct tensor * x,
+                                            struct tensor * style,
+                                            struct tensor * fcW,
+                                            struct tensor * fcB,
+                                            struct tensor * nW,
+                                            struct tensor * nB,
+                                            int C,
+                                            const float * mean,
+                                            const float * istd) {
+    struct arena * sa = arena_get_active();
+    struct tensor * h = tensor_mul_mat(fcW, style);
+    h = tensor_add(h, fcB);
+    const size_t fsz = sizeof(float);
+    struct tensor * gamma   = tensor_view_1d(h, C, 0);
+    struct tensor * beta    = tensor_view_1d(h, C, (size_t)C * fsz);
+    struct tensor * gamma_c = tensor_cont(gamma);
+    struct tensor * beta_c  = tensor_cont(beta);
+    struct tensor * neg_mean = tensor_new_1d(sa, C);
+    struct tensor * istd_t   = tensor_new_1d(sa, C);
+    int c = 0;
+    while (c < C) {
+        ((float *)neg_mean->data)[c] = -mean[c];
+        ((float *)istd_t->data)[c]   =  istd[c];
+        c++;
+    }
+    struct tensor * n = tensor_add(x, neg_mean);   // broadcasts (C,) over L
+    n = tensor_mul(n, istd_t);
+    if (nW != NULL) { n = tensor_mul(n, nW); }
+    if (nB != NULL) { n = tensor_add(n, nB); }
+    struct tensor * n_g = tensor_mul(n, gamma_c);
+    struct tensor * out = tensor_add(n_g, n);
+    out = tensor_add(out, beta_c);
+    return out;
+}
+
+static struct tensor * build_hifi_block(struct kittens_ctx * ctx,
+                                        const char * prefix,
+                                        struct tensor * x,
+                                        struct tensor * style) {
+    struct arena * sa = ctx->scratch_arena;
+    const int     C = (int)x->ne[0];
+    const int64_t L = x->ne[1];
+    static const int dilations[3] = { 1, 3, 5 };
+    arena_set_active(sa);
+    // Save x, style at entry. Both are needed across the per-k
+    // segmented loop below; arena_reset between segments would wipe
+    // them otherwise.
+    struct savept ps  = save(style);
+    struct savept px0 = save(x);
+    arena_reset(sa);
+    fprintf(stderr, "    [OOM hifi2-entry %-9s L=%-6lld phys=%7.1f MB]\n",
+            prefix, (long long)L, oom_mb());
+    // Small inputs fall through to the same one-segment path as the
+    // non-segmented version — peeling the loop is more overhead than
+    // segmentation saves below the SEG_L+2*OVERLAP threshold.
+    struct tensor * result = NULL;
+    if (L <= (int64_t)HIFI_SEG_L + 2 * HIFI_SEG_OVERLAP) {
+        struct tensor * out = restore(sa, &px0);
+        savept_free(&px0);
+        style = restore(sa, &ps);
+        for (int k = 0; k < 3; k++) {
+            if (k > 0) {
+                struct savept po = save(out);
+                arena_reset(sa);
+                out   = restore(sa, &po);  savept_free(&po);
+                style = restore(sa, &ps);
+            }
+            const int d = dilations[k];
+            struct tensor * a1_fcW = named_fmt(ctx, "%s.a1.%d.fcW", prefix, k);
+            struct tensor * a1_fcB = named_fmt(ctx, "%s.a1.%d.fcB", prefix, k);
+            struct tensor * a1_nW  = named_fmt(ctx, "%s.a1.%d.nW",  prefix, k);
+            struct tensor * a1_nB  = named_fmt(ctx, "%s.a1.%d.nB",  prefix, k);
+            struct tensor * a2_fcW = named_fmt(ctx, "%s.a2.%d.fcW", prefix, k);
+            struct tensor * a2_fcB = named_fmt(ctx, "%s.a2.%d.fcB", prefix, k);
+            struct tensor * a2_nW  = named_fmt(ctx, "%s.a2.%d.nW",  prefix, k);
+            struct tensor * a2_nB  = named_fmt(ctx, "%s.a2.%d.nB",  prefix, k);
+            struct tensor * al1    = named_fmt(ctx, "%s.al1.%d",    prefix, k);
+            struct tensor * al2    = named_fmt(ctx, "%s.al2.%d",    prefix, k);
+            struct tensor * c1_w   = named_fmt(ctx, "%s.c1.%d.weight", prefix, k);
+            struct tensor * c1_b   = named_fmt(ctx, "%s.c1.%d.bias",   prefix, k);
+            struct tensor * c2_w   = named_fmt(ctx, "%s.c2.%d.weight", prefix, k);
+            struct tensor * c2_b   = named_fmt(ctx, "%s.c2.%d.bias",   prefix, k);
+            const int K1 = (int)c1_w->ne[0];
+            const int K2 = (int)c2_w->ne[0];
+            struct tensor * h = ada_in_1d(out, style, a1_fcW, a1_fcB,
+                                         a1_nW, a1_nB, C);
+            h = snake_1d(h, al1);
+            h = conv1d_nlc(h, c1_w, c1_b, 1, d * (K1 - 1) / 2, d);
+            h = ada_in_1d(h, style, a2_fcW, a2_fcB, a2_nW, a2_nB, C);
+            h = snake_1d(h, al2);
+            h = conv1d_nlc(h, c2_w, c2_b, 1, (K2 - 1) / 2, 1);
+            out = tensor_add(out, h);
+        }
+        result = out;
+    } else {
+        // Two-pass segmented path. out_host carries the residual
+        // stream across k iterations; h3_host stores the assembled
+        // post-conv1 intermediate so pass B reads it directly
+        // instead of recomputing AdaIN1 + snake + conv1.
+        const size_t total_floats = (size_t)C * (size_t)L;
+        float *  out_host = (float *)malloc(total_floats * sizeof(float));
+        float *  h3_host  = (float *)malloc(total_floats * sizeof(float));
+        assert(out_host != NULL && h3_host != NULL);
+        memcpy(out_host, px0.data, total_floats * sizeof(float));
+        savept_free(&px0);
+        float *  mean_in   = (float *)malloc((size_t)C * sizeof(float));
+        float *  istd_in   = (float *)malloc((size_t)C * sizeof(float));
+        float *  mean_mid  = (float *)malloc((size_t)C * sizeof(float));
+        float *  istd_mid  = (float *)malloc((size_t)C * sizeof(float));
+        assert(mean_in && istd_in && mean_mid && istd_mid);
+        for (int k = 0; k < 3; k++) {
+            const int d = dilations[k];
+            struct tensor * a1_fcW = named_fmt(ctx, "%s.a1.%d.fcW", prefix, k);
+            struct tensor * a1_fcB = named_fmt(ctx, "%s.a1.%d.fcB", prefix, k);
+            struct tensor * a1_nW  = named_fmt(ctx, "%s.a1.%d.nW",  prefix, k);
+            struct tensor * a1_nB  = named_fmt(ctx, "%s.a1.%d.nB",  prefix, k);
+            struct tensor * a2_fcW = named_fmt(ctx, "%s.a2.%d.fcW", prefix, k);
+            struct tensor * a2_fcB = named_fmt(ctx, "%s.a2.%d.fcB", prefix, k);
+            struct tensor * a2_nW  = named_fmt(ctx, "%s.a2.%d.nW",  prefix, k);
+            struct tensor * a2_nB  = named_fmt(ctx, "%s.a2.%d.nB",  prefix, k);
+            struct tensor * al1    = named_fmt(ctx, "%s.al1.%d",    prefix, k);
+            struct tensor * al2    = named_fmt(ctx, "%s.al2.%d",    prefix, k);
+            struct tensor * c1_w   = named_fmt(ctx, "%s.c1.%d.weight", prefix, k);
+            struct tensor * c1_b   = named_fmt(ctx, "%s.c1.%d.bias",   prefix, k);
+            struct tensor * c2_w   = named_fmt(ctx, "%s.c2.%d.weight", prefix, k);
+            struct tensor * c2_b   = named_fmt(ctx, "%s.c2.%d.bias",   prefix, k);
+            const int K1 = (int)c1_w->ne[0];
+            const int K2 = (int)c2_w->ne[0];
+            // AdaIN1 input stats: out_host is fully known.
+            hifi_compute_stats_host(out_host, C, L, mean_in, istd_in);
+            // ----- Pass A: per-segment AdaIN1 -> snake -> conv1.
+            //               Copy the clean middle of h3 into h3_host
+            //               at its global position. After the loop
+            //               h3_host holds the assembled full h3
+            //               (channels-inner layout).
+            //
+            // Why store h3 instead of recomputing it in pass B:
+            //   1) Pass B no longer redoes AdaIN1 + snake + conv1
+            //      per segment — total compute drops from ~1.5x of
+            //      the non-segmented path to ~1x.
+            //   2) AdaIN2's input stats come from h3_host via the
+            //      same fp32 vDSP reduction tensor_norm uses on the
+            //      full tensor in baseline — bit-parity, not just
+            //      "close enough".
+            //   3) Pass B's segment input includes the OVERLAP
+            //      region of h3. Since adjacent segments' clean
+            //      middles already cover those positions in h3_host,
+            //      a stride read gives REAL h3 values there (not the
+            //      truncated-context values pass A produced inside
+            //      its own segment overlap, which would be wrong).
+            int64_t a = 0;
+            while (a < L) {
+                int64_t b  = a + (int64_t)HIFI_SEG_L;
+                if (b > L) { b = L; }
+                int64_t lo = a - (int64_t)HIFI_SEG_OVERLAP;
+                if (lo < 0) { lo = 0; }
+                int64_t hi = b + (int64_t)HIFI_SEG_OVERLAP;
+                if (hi > L) { hi = L; }
+                const int64_t seg_W  = hi - lo;
+                const int     cm_off = (int)(a - lo);
+                const int     cm_n   = (int)(b - a);
+                arena_reset(sa);
+                struct tensor * seg_in = tensor_new_2d(sa, C, seg_W);
+                memcpy(seg_in->data,
+                       out_host + (size_t)lo * (size_t)C,
+                       (size_t)seg_W * (size_t)C * sizeof(float));
+                struct tensor * sty = restore(sa, &ps);
+                struct tensor * h = ada_in_1d_with_stats(
+                    seg_in, sty, a1_fcW, a1_fcB, a1_nW, a1_nB, C,
+                    mean_in, istd_in);
+                h = snake_1d(h, al1);
+                h = conv1d_nlc(h, c1_w, c1_b, 1, d * (K1 - 1) / 2, d);
+                memcpy(h3_host + (size_t)a * (size_t)C,
+                       (const float *)h->data
+                           + (size_t)cm_off * (size_t)C,
+                       (size_t)cm_n * (size_t)C * sizeof(float));
+                a = b;
+            }
+            // AdaIN2 input stats from the assembled h3_host. Same
+            // fp32 vDSP reduction tensor_norm would do on full h3.
+            hifi_compute_stats_host(h3_host, C, L, mean_mid, istd_mid);
+            // ----- Pass B: per-segment AdaIN2 -> snake -> conv2.
+            //               Input is sliced from h3_host (REAL h3
+            //               values everywhere including overlap).
+            //               Clean middle of conv2 output is residual-
+            //               added back into out_host.
+            a = 0;
+            while (a < L) {
+                int64_t b  = a + (int64_t)HIFI_SEG_L;
+                if (b > L) { b = L; }
+                int64_t lo = a - (int64_t)HIFI_SEG_OVERLAP;
+                if (lo < 0) { lo = 0; }
+                int64_t hi = b + (int64_t)HIFI_SEG_OVERLAP;
+                if (hi > L) { hi = L; }
+                const int64_t seg_W  = hi - lo;
+                const int     cm_off = (int)(a - lo);
+                const int     cm_n   = (int)(b - a);
+                arena_reset(sa);
+                struct tensor * seg_h3 = tensor_new_2d(sa, C, seg_W);
+                memcpy(seg_h3->data,
+                       h3_host + (size_t)lo * (size_t)C,
+                       (size_t)seg_W * (size_t)C * sizeof(float));
+                struct tensor * sty = restore(sa, &ps);
+                struct tensor * h = ada_in_1d_with_stats(
+                    seg_h3, sty, a2_fcW, a2_fcB, a2_nW, a2_nB, C,
+                    mean_mid, istd_mid);
+                h = snake_1d(h, al2);
+                h = conv1d_nlc(h, c2_w, c2_b, 1, (K2 - 1) / 2, 1);
+                const float * src = (const float *)h->data
+                                  + (size_t)cm_off * (size_t)C;
+                float * dst = out_host + (size_t)a * (size_t)C;
+                const int total_n = cm_n * C;
+                int i = 0;
+                while (i < total_n) { dst[i] += src[i]; i++; }
+                a = b;
+            }
+            fprintf(stderr, "    [OOM hifi2-k%d-end %-9s     phys=%7.1f MB]\n",
+                    k, prefix, oom_mb());
+        }
+        // Materialize the residual stream as an arena tensor.
+        arena_reset(sa);
+        result = tensor_new_2d(sa, C, L);
+        memcpy(result->data, out_host, total_floats * sizeof(float));
+        free(out_host);  free(h3_host);
+        free(mean_in);   free(istd_in);
+        free(mean_mid);  free(istd_mid);
+    }
+    savept_free(&ps);
+    return result;
+}
+
+#else   // HIFI_INTRA_K_ONLY — fallback intra-k save/reset only
+
+// Intra-k save/reset between major operations of build_hifi_block.
+// Snapshots both live tensors (out, h) to host, wipes the scratch
+// arena (freeing every intermediate the just-finished op left in
+// it), then restores them along with style. Mathematically a no-op:
+// same tensor values before and after, just fewer dead allocations
+// crowding the arena's high-water mark.
+//
+// Why: ada_in_1d and conv1d_nlc each leave 3-5 intermediates of size
+// (C, L) in the arena that the next op no longer needs but can't
+// free (arena is bump-allocator). Across the 6 ops per k iteration
+// they accumulate to ~10-15 dead (C, L) tensors at the peak. Resetting
+// between ops bounds per-call peak to one op's own internal scratch,
+// which is what dominates the iOS RSS spike during long utterances.
+// Cost per call: a couple of (C, L) memcpys — well under 1% of synth
+// wall-clock.
+static void hifi_reset_after_op(struct arena * sa,
+                                struct tensor ** out_p,
+                                struct tensor ** h_p,
+                                const struct savept * ps,
+                                struct tensor ** style_p) {
+    struct savept p_out = save(*out_p);
+    struct savept p_h   = save(*h_p);
+    arena_reset(sa);
+    *out_p   = restore(sa, &p_out);  savept_free(&p_out);
+    *h_p     = restore(sa, &p_h);    savept_free(&p_h);
+    *style_p = restore(sa, ps);
+}
+
 static struct tensor * build_hifi_block(struct kittens_ctx * ctx, const char * prefix,
                                     struct tensor * x, struct tensor * style) {
     struct arena * sa = ctx->scratch_arena;
@@ -744,11 +1127,8 @@ static struct tensor * build_hifi_block(struct kittens_ctx * ctx, const char * p
     struct tensor * out = restore(sa, &px0);
     style = restore(sa, &ps);
     savept_free(&px0);
-#ifdef OOM_TRACE
-    { const int L = 0, F = 0;
-      fprintf(stderr, "    [OOM hifi-entry  %-9s     phys=%7.1f MB]\n",
-              prefix, oom_mb()); (void)L; (void)F; }
-#endif
+    fprintf(stderr, "    [OOM hifi-entry  %-9s     phys=%7.1f MB]\n",
+            prefix, oom_mb());
     for (int k = 0; k < 3; k++) {
         if (k > 0) {
             struct savept po = save(out);
@@ -775,21 +1155,26 @@ static struct tensor * build_hifi_block(struct kittens_ctx * ctx, const char * p
         const int K2 = (int)c2_w->ne[0];
         struct tensor * h = ada_in_1d(out, style, a1_fcW, a1_fcB,
                                      a1_nW, a1_nB, C);
+        hifi_reset_after_op(sa, &out, &h, &ps, &style);
         h = snake_1d(h, al1);
         h = conv1d_nlc(h, c1_w, c1_b, 1, d * (K1 - 1) / 2, d);
+        hifi_reset_after_op(sa, &out, &h, &ps, &style);
         h = ada_in_1d(h, style, a2_fcW, a2_fcB, a2_nW, a2_nB, C);
+        hifi_reset_after_op(sa, &out, &h, &ps, &style);
         h = snake_1d(h, al2);
         h = conv1d_nlc(h, c2_w, c2_b, 1, (K2 - 1) / 2, 1);
+        // No reset before the residual add — tensor_add consumes h
+        // and produces the new `out`, then the loop top either exits
+        // or runs the k>0 save/reset which clears everything.
         out = tensor_add(out, h);
-#ifdef OOM_TRACE
-        { const int L = 0, F = 0;
-          fprintf(stderr, "    [OOM hifi-k%d-end %-9s     phys=%7.1f MB]\n",
-                  k, prefix, oom_mb()); (void)L; (void)F; }
-#endif
+        fprintf(stderr, "    [OOM hifi-k%d-end %-9s     phys=%7.1f MB]\n",
+                k, prefix, oom_mb());
     }
     savept_free(&ps);
     return out;
 }
+
+#endif  // !HIFI_INTRA_K_ONLY
 
 // ---------------------------------------------------------------------------
 // BERT/Albert encoder
@@ -801,6 +1186,7 @@ static struct tensor * build_albert(struct kittens_ctx * ctx, int L,
                                 const int32_t * type) {
     const struct arch * a = &ctx->arch;
     const struct weights * W = &ctx->W;
+    struct arena * sa = ctx->scratch_arena;
 
     struct tensor * h = tensor_get_rows(W->e_word, ids,  L);
     struct tensor * p = tensor_get_rows(W->e_pos,  pos,  L);
@@ -810,8 +1196,46 @@ static struct tensor * build_albert(struct kittens_ctx * ctx, int L,
     h = layer_norm(h, W->e_ln_w, W->e_ln_b, a->ln_eps);
     h = tensor_mul_mat(W->proj_w, h);
     h = tensor_add(h, W->proj_b);
+    // Save h, reset arena, restore: clears the embed-stage
+    // intermediates (three get_rows row tensors, the two adds, the
+    // layer_norm scratch, the proj matmul + bias add) before the
+    // 24-layer stack starts piling on its own ~15-20 MB per layer.
+    // h is the only carry — shape (hidden, L), maybe 800 KB at L=200.
+    // Mirrors the inter-iteration save/reset pattern from
+    // build_hifi_block's k loop above.
+    //
+    // Invariant for save(): the carry must be PACKED, since save()
+    // does `memcpy(p.data, t->data, prod(ne) * sizeof(float))` with
+    // no stride awareness. h here is the output of tensor_add(...,
+    // proj_b), and tensor_apply_binop always allocates a fresh packed
+    // buffer — so h is packed at save time. The assert below pins
+    // that invariant down in case anyone moves the save site.
+    assert(tensor_is_packed(h));
+    {
+        struct savept p_h = save(h);
+        arena_reset(sa);
+        h = restore(sa, &p_h);
+        savept_free(&p_h);
+    }
     const float kq_scale = 1.0f / sqrtf((float)a->head_dim);
     for (int il = 0; il < a->n_layers; il++) {
+        // Per-layer save/reset. Without this, each layer's q/k/v
+        // matmul outputs (~hidden*L each), reshape/permute copies,
+        // the (L, L, n_heads) attention matrix, kqv, att_out, the
+        // ffn_dim*L FFN intermediate, and a half-dozen smaller
+        // tensors stack across all 24 layers and the function peaks
+        // at the cumulative sum (~334 MB at L=211). With per-layer
+        // reset the peak is one layer's worth (~20-40 MB).
+        if (il > 0) {
+            // h here is the output of the previous layer's final
+            // layer_norm -> tensor_add (in layer_norm), always
+            // packed. Same invariant as the pre-loop save.
+            assert(tensor_is_packed(h));
+            struct savept p_h = save(h);
+            arena_reset(sa);
+            h = restore(sa, &p_h);
+            savept_free(&p_h);
+        }
         struct tensor * residual = h;
         struct tensor * q = tensor_add(tensor_mul_mat(W->q_w, h), W->q_b);
         struct tensor * k = tensor_add(tensor_mul_mat(W->k_w, h), W->k_b);
@@ -932,7 +1356,22 @@ static struct textstage_outs build_textstage(struct kittens_ctx * ctx,
                                              struct tensor * c0) {
     const struct weights * W = &ctx->W;
     struct arena * sa = ctx->scratch_arena;
+    // build_albert now resets the scratch arena between its
+    // transformer layers to bound its peak (24 layers worth of dead
+    // q/k/v/attn/ffn intermediates was the 334 MB stage-1 spike).
+    // Those resets would wipe style_pr / h0 / c0 (allocated by the
+    // caller in kittens_synthesize and needed AFTER bert), so snapshot
+    // them to host across the call.
+    struct savept p_sty = save(style_pr);
+    struct savept p_h0  = save(h0);
+    struct savept p_c0  = save(c0);
     struct tensor * bert = build_albert(ctx, L, ids, pos, type);
+    style_pr = restore(sa, &p_sty);
+    h0       = restore(sa, &p_h0);
+    c0       = restore(sa, &p_c0);
+    savept_free(&p_sty);
+    savept_free(&p_h0);
+    savept_free(&p_c0);
     struct tensor * bert_proj = tensor_add(
         tensor_mul_mat(W->bert_enc_w, bert), W->bert_enc_b);   // (256, L)
     struct tensor * prosody = build_pred_text(ctx, bert_proj, style_pr,
@@ -1041,9 +1480,9 @@ static struct noise_outs build_noise_contribs(struct kittens_ctx * ctx,
     const int T_audio  = T_frames * hop;
     const float sr     = 24000.0f;
     const float two_pi = 2.0f * (float)M_PI;
-#ifdef OOM_TRACE
-    const int L = 0; (void)T_audio;  // OOM_MARK uses L; not relevant here
-#endif
+    // OOM_MARK uses L in its format; noise_contribs has no phoneme L,
+    // so feed 0 as a placeholder.
+    const int L = 0; (void)T_audio;
     OOM_MARK("noise:entry");
     // f0_audio: nearest-neighbor upsample (1, 2F) -> (1, T_audio).
     struct tensor * f0_3d  = tensor_reshape_3d(f0_proj, 1, 1, T_frames);
