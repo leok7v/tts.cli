@@ -1,37 +1,18 @@
-// kittens.c -- pure-C / cblas KittenTTS backend.
-//
-// Public API in cpu/include/kittens.h. The pipeline runs four stages
-// (textstage / genfront / decoder / generator) on struct tensor and an
-// arena allocator. Eager evaluation - no graph builder, no two-phase
-// compute. Single-file library: this TU pulls gguf.c (which pulls
-// tensor.c) via #include, so the whole stack compiles as one TU.
-
 #ifndef KITTENS_C
 #define KITTENS_C
 
-#include "kittens.h"
-#include "gguf.c"           // transitively #includes "tensor.c"
+#include "tts/kittens.h"
+#include "tensor.c"
+#include "gguf_reader.c"
+#include "trace/trace.h"
 
 #include <assert.h>
+#include <mach/mach.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-// Per-stage RSS tracing. Env-gated via TTS_TRACE_RSS=1 to keep
-// default runs silent; set the env var to see the per-stage
-// phys_footprint progression in Xcode debug console or stderr.
-// Aligned with talking.frog.devs/tts/kittens.c's trace shape; the
-// trace_rss macro here writes directly to stderr (we don't carry
-// that repo's trace/trace.h ring-buffer infrastructure).
-//
-// Per-arena-alloc tracking remains internal to tensor.c. Per-
-// hifi-block fprintfs further down are unconditional — they're
-// useful enough during memory work that silencing them by default
-// would defeat the purpose.
-#include <stdbool.h>
-#include <mach/mach.h>
 
 static double rss_mb(void) {
     struct task_vm_info info; mach_msg_type_number_t n = TASK_VM_INFO_COUNT;
@@ -49,15 +30,13 @@ static bool is_trace_rss_enabled(void) {
     return enabled;
 }
 
+static int g_carry_fp16 = 0;
+
 #define trace_rss(tag) do {                                          \
     if (is_trace_rss_enabled()) {                                    \
-        fprintf(stderr, "[RSS %-24s] %.2f MB\n", tag, rss_mb());     \
+        trace(info, "[RSS %-24s] %.2f MB", tag, rss_mb());           \
     }                                                                \
 } while(0)
-
-// ---------------------------------------------------------------------------
-// Arch + weights (internal; loaded from GGUF at ctx-create time)
-// ---------------------------------------------------------------------------
 
 struct arch {
     int vocab, max_pos, token_types;
@@ -67,9 +46,7 @@ struct arch {
     int audio_per_frame, istft_hop, istft_trim;
 };
 
-// Bound weight pointers. Loaded by bind_weights() into weights_arena.
 struct weights {
-    // Albert / BERT
     struct tensor * e_word, * e_pos, * e_type;
     struct tensor * e_ln_w, * e_ln_b;
     struct tensor * proj_w, * proj_b;
@@ -77,31 +54,23 @@ struct weights {
     struct tensor * attn_ln_w, * attn_ln_b;
     struct tensor * ffn_w, * ffn_b, * ffn_out_w, * ffn_out_b;
     struct tensor * full_ln_w, * full_ln_b;
-    // post-BERT projection
     struct tensor * bert_enc_w, * bert_enc_b;
-    // PredictorTextEncoder
     struct tensor * pt_l0_fW, * pt_l0_fR, * pt_l0_fb;
     struct tensor * pt_l0_bW, * pt_l0_bR, * pt_l0_bb;
     struct tensor * pt_fc1_w, * pt_fc1_b;
     struct tensor * pt_l2_fW, * pt_l2_fR, * pt_l2_fb;
     struct tensor * pt_l2_bW, * pt_l2_bR, * pt_l2_bb;
     struct tensor * pt_fc3_w, * pt_fc3_b;
-    // Duration head
     struct tensor * dur_l_fW, * dur_l_fR, * dur_l_fb;
     struct tensor * dur_l_bW, * dur_l_bR, * dur_l_bb;
     struct tensor * dur_w, * dur_b;
-    // Acoustic text encoder
     struct tensor * ac_embd;
     struct tensor * ac_c0_w, * ac_c0_b, * ac_ln0_g, * ac_ln0_b;
     struct tensor * ac_c1_w, * ac_c1_b, * ac_ln1_g, * ac_ln1_b;
     struct tensor * ac_l_fW, * ac_l_fR, * ac_l_fb;
     struct tensor * ac_l_bW, * ac_l_bR, * ac_l_bb;
-    // GenFront shared LSTM
     struct tensor * sh_fW, * sh_fR, * sh_fb;
     struct tensor * sh_bW, * sh_bR, * sh_bb;
-    // F0 / N / decoder / generator blocks are looked up dynamically by
-    // formatted name (e.g. "f0.0.c1.weight", "dec.decode.3.pool.weight",
-    // "gen.r0.c1.0.weight"). See named() / named_fmt() below.
 };
 
 struct named_entry {
@@ -110,14 +79,11 @@ struct named_entry {
 };
 
 struct kittens_ctx {
-    struct gguf *         gguf;
-    struct arena *        weights_arena;  // model-lifetime
-    struct arena *        scratch_arena;  // reset each kittens_synthesize
+    struct gguf           gguf;
+    struct arena *        weights_arena;
+    struct arena *        scratch_arena;
     struct arch           arch;
     struct weights        W;
-    // Lazy name->tensor cache for dynamically named block weights
-    // (e.g. "f0.0.c1.weight", "gen.r0.c1.0.weight"). Populated on first
-    // lookup; entries live in weights_arena so they survive arena resets.
     struct named_entry *  cache;
     int                   cache_count;
     int                   cache_cap;
@@ -131,23 +97,81 @@ static void set_ctx_err(struct kittens_ctx * ctx, const char * fmt, ...) {
 }
 
 const char * kittens_last_error(const struct kittens_ctx * ctx) {
-    return ctx != NULL ? ctx->err : gguf_last_error();
+    return ctx != NULL ? ctx->err : "";
 }
 
-// ---------------------------------------------------------------------------
-// Weight binding
-// ---------------------------------------------------------------------------
+static int kt_u32(const struct gguf * g, const char * key, uint32_t * out) {
+    const struct gguf_kv * kv = gguf_find_kv(g, key);
+    int found = (kv != NULL && kv->v.type == GGUF_VT_U32);
+    if (found) { *out = gguf_kv_u32(g, key, 0); }
+    return found;
+}
 
-// Looked up by name; returns NULL if not present, caller decides.
+static int kt_f32(const struct gguf * g, const char * key, float * out) {
+    const struct gguf_kv * kv = gguf_find_kv(g, key);
+    int found = (kv != NULL && kv->v.type == GGUF_VT_F32);
+    if (found) { *out = gguf_kv_f32(g, key, 0.0f); }
+    return found;
+}
+
+struct kt_build_ctx {
+    struct arena *  arena;
+    const char *    name;
+    struct tensor * out;
+};
+
+static void kt_build_tensor(void * vctx, const struct gguf_tensor * t,
+                            const void * data, size_t nbytes) {
+    (void)nbytes;
+    struct kt_build_ctx * c = (struct kt_build_ctx *)vctx;
+    int64_t ne[4] = { 1, 1, 1, 1 };
+    for (uint32_t d = 0; d < t->n_dims; d++) { ne[d] = (int64_t)t->shape[d]; }
+    struct tensor * out = NULL;
+    if (t->type == GGUF_TT_F32) {
+        out = tensor_wrap_nd(c->arena, (int)t->n_dims, (float *)data, ne);
+    } else if (t->type == GGUF_TT_F16) {
+        out = tensor_new_nd(c->arena, (int)t->n_dims, ne);
+        int64_t total = tensor_nelements(out);
+        const uint16_t * src16 = (const uint16_t *)data;
+        float * dst = out->data;
+        for (int64_t i = 0; i < total; i++) {
+            _Float16 h;
+            memcpy(&h, &src16[i], 2);
+            dst[i] = (float)h;
+        }
+    } else {
+        assert(0 && "gguf: unsupported tensor dtype");
+    }
+    if (out != NULL) { tensor_set_name(out, c->name); }
+    c->out = out;
+}
+
+static struct tensor * kt_load_tensor(const struct gguf * g,
+                                      struct arena * arena,
+                                      const char * name) {
+    const struct gguf_tensor * t = gguf_find_tensor(g, name);
+    struct tensor * out = NULL;
+    if (t != NULL) {
+        uint64_t nel = 1;
+        for (uint32_t d = 0; d < t->n_dims; d++) { nel *= t->shape[d]; }
+        size_t per = (t->type == GGUF_TT_F32) ? 4u
+                   : (t->type == GGUF_TT_F16) ? 2u : 0u;
+        struct kt_build_ctx c = { arena, name, NULL };
+        gguf_load_tensor(g, t, (size_t)nel * per, GGUF_SRC_SHARED,
+                         kt_build_tensor, &c);
+        out = c.out;
+    }
+    return out;
+}
+
 static struct tensor * bind(struct kittens_ctx * ctx, const char * name) {
-    struct tensor * t = gguf_load_tensor(ctx->gguf, ctx->weights_arena, name);
+    struct tensor * t = kt_load_tensor(&ctx->gguf, ctx->weights_arena, name);
     if (t == NULL) {
         set_ctx_err(ctx, "missing GGUF tensor: %s", name);
     }
     return t;
 }
 
-// Required: assert it exists.
 static struct tensor * bind_req(struct kittens_ctx * ctx, const char * name) {
     struct tensor * t = bind(ctx, name);
     if (t == NULL) {
@@ -159,43 +183,43 @@ static struct tensor * bind_req(struct kittens_ctx * ctx, const char * name) {
 
 static int load_arch(struct kittens_ctx * ctx) {
     uint32_t v;
-    int loaded = gguf_get_u32(ctx->gguf,
+    int loaded = kt_u32(&ctx->gguf,
                                  "kittens-tts.vocab_size", &v);
     if (!loaded) {
         set_ctx_err(ctx, "missing arch KV: kittens-tts.vocab_size");
     } else {
         ctx->arch.vocab = (int)v;
-        gguf_get_u32(ctx->gguf, "kittens-tts.max_position", &v);
+        kt_u32(&ctx->gguf, "kittens-tts.max_position", &v);
         ctx->arch.max_pos = (int)v;
-        gguf_get_u32(ctx->gguf, "kittens-tts.token_types", &v);
+        kt_u32(&ctx->gguf, "kittens-tts.token_types", &v);
         ctx->arch.token_types = (int)v;
-        gguf_get_u32(ctx->gguf, "kittens-tts.embedding_dim", &v);
+        kt_u32(&ctx->gguf, "kittens-tts.embedding_dim", &v);
         ctx->arch.embd_dim = (int)v;
-        gguf_get_u32(ctx->gguf, "kittens-tts.hidden_size", &v);
+        kt_u32(&ctx->gguf, "kittens-tts.hidden_size", &v);
         ctx->arch.hidden = (int)v;
-        gguf_get_u32(ctx->gguf, "kittens-tts.num_layers", &v);
+        kt_u32(&ctx->gguf, "kittens-tts.num_layers", &v);
         ctx->arch.n_layers = (int)v;
-        gguf_get_u32(ctx->gguf, "kittens-tts.num_heads", &v);
+        kt_u32(&ctx->gguf, "kittens-tts.num_heads", &v);
         ctx->arch.n_heads = (int)v;
-        gguf_get_u32(ctx->gguf, "kittens-tts.head_dim", &v);
+        kt_u32(&ctx->gguf, "kittens-tts.head_dim", &v);
         ctx->arch.head_dim = (int)v;
-        gguf_get_u32(ctx->gguf, "kittens-tts.ffn_dim", &v);
+        kt_u32(&ctx->gguf, "kittens-tts.ffn_dim", &v);
         ctx->arch.ffn_dim = (int)v;
-        gguf_get_f32(ctx->gguf, "kittens-tts.layer_norm_eps",
+        kt_f32(&ctx->gguf, "kittens-tts.layer_norm_eps",
                         &ctx->arch.ln_eps);
-        gguf_get_u32(ctx->gguf, "kittens-tts.bert_enc_dim", &v);
+        kt_u32(&ctx->gguf, "kittens-tts.bert_enc_dim", &v);
         ctx->arch.bert_enc_dim = (int)v;
-        gguf_get_u32(ctx->gguf, "kittens-tts.style_dim", &v);
+        kt_u32(&ctx->gguf, "kittens-tts.style_dim", &v);
         ctx->arch.style_dim = (int)v;
-        gguf_get_u32(ctx->gguf, "kittens-tts.lstm_hidden", &v);
+        kt_u32(&ctx->gguf, "kittens-tts.lstm_hidden", &v);
         ctx->arch.lstm_hidden = (int)v;
-        gguf_get_u32(ctx->gguf, "kittens-tts.dur_logits", &v);
+        kt_u32(&ctx->gguf, "kittens-tts.dur_logits", &v);
         ctx->arch.dur_logits = (int)v;
-        gguf_get_u32(ctx->gguf, "kittens-tts.audio_per_frame", &v);
+        kt_u32(&ctx->gguf, "kittens-tts.audio_per_frame", &v);
         ctx->arch.audio_per_frame = (int)v;
-        gguf_get_u32(ctx->gguf, "kittens-tts.istft_hop", &v);
+        kt_u32(&ctx->gguf, "kittens-tts.istft_hop", &v);
         ctx->arch.istft_hop = (int)v;
-        gguf_get_u32(ctx->gguf, "kittens-tts.istft_trim", &v);
+        kt_u32(&ctx->gguf, "kittens-tts.istft_trim", &v);
         ctx->arch.istft_trim = (int)v;
     }
     return loaded;
@@ -203,7 +227,6 @@ static int load_arch(struct kittens_ctx * ctx) {
 
 static void bind_weights(struct kittens_ctx * ctx) {
     struct weights * W = &ctx->W;
-    // Albert
     W->e_word   = bind_req(ctx, "embd.word.weight");
     W->e_pos    = bind_req(ctx, "embd.pos.weight");
     W->e_type   = bind_req(ctx, "embd.type.weight");
@@ -227,10 +250,8 @@ static void bind_weights(struct kittens_ctx * ctx) {
     W->ffn_out_b= bind_req(ctx, "layer.ffn_out.bias");
     W->full_ln_w= bind_req(ctx, "layer.full_ln.weight");
     W->full_ln_b= bind_req(ctx, "layer.full_ln.bias");
-    // post-BERT
     W->bert_enc_w = bind_req(ctx, "bert_enc.weight");
     W->bert_enc_b = bind_req(ctx, "bert_enc.bias");
-    // PredictorTextEncoder
     W->pt_l0_fW = bind_req(ctx, "pred_text.lstm0.fwd.W");
     W->pt_l0_fR = bind_req(ctx, "pred_text.lstm0.fwd.R");
     W->pt_l0_fb = bind_req(ctx, "pred_text.lstm0.fwd.b");
@@ -247,7 +268,6 @@ static void bind_weights(struct kittens_ctx * ctx) {
     W->pt_l2_bb = bind_req(ctx, "pred_text.lstm2.bwd.b");
     W->pt_fc3_w = bind_req(ctx, "pred_text.fc3.weight");
     W->pt_fc3_b = bind_req(ctx, "pred_text.fc3.bias");
-    // Duration head
     W->dur_l_fW = bind_req(ctx, "dur.lstm.fwd.W");
     W->dur_l_fR = bind_req(ctx, "dur.lstm.fwd.R");
     W->dur_l_fb = bind_req(ctx, "dur.lstm.fwd.b");
@@ -256,7 +276,6 @@ static void bind_weights(struct kittens_ctx * ctx) {
     W->dur_l_bb = bind_req(ctx, "dur.lstm.bwd.b");
     W->dur_w    = bind_req(ctx, "dur_proj.weight");
     W->dur_b    = bind_req(ctx, "dur_proj.bias");
-    // Acoustic text encoder
     W->ac_embd  = bind_req(ctx, "acoustic.embd.weight");
     W->ac_c0_w  = bind_req(ctx, "acoustic.cnn0.weight");
     W->ac_c0_b  = bind_req(ctx, "acoustic.cnn0.bias");
@@ -272,37 +291,24 @@ static void bind_weights(struct kittens_ctx * ctx) {
     W->ac_l_bW  = bind_req(ctx, "acoustic.lstm.bwd.W");
     W->ac_l_bR  = bind_req(ctx, "acoustic.lstm.bwd.R");
     W->ac_l_bb  = bind_req(ctx, "acoustic.lstm.bwd.b");
-    // Shared LSTM (GenFront)
     W->sh_fW    = bind_req(ctx, "shared.lstm.fwd.W");
     W->sh_fR    = bind_req(ctx, "shared.lstm.fwd.R");
     W->sh_fb    = bind_req(ctx, "shared.lstm.fwd.b");
     W->sh_bW    = bind_req(ctx, "shared.lstm.bwd.W");
     W->sh_bR    = bind_req(ctx, "shared.lstm.bwd.R");
     W->sh_bb    = bind_req(ctx, "shared.lstm.bwd.b");
-    // The F0/N/decoder/generator block tensors are looked up by
-    // formatted name inside the inference path; not bound up-front.
 }
 
-// ---------------------------------------------------------------------------
-// Public lifecycle
-// ---------------------------------------------------------------------------
-
 struct kittens_ctx * kittens_create(const char * gguf_path) {
+    trace_set_min_level(trace_level_info);
     struct kittens_ctx * ctx = (struct kittens_ctx *)calloc(1, sizeof(*ctx));
     int success = 0;
     if (ctx != NULL) {
-        ctx->gguf = gguf_open(gguf_path);
-        if (ctx->gguf == NULL) {
+        if (gguf_open(&ctx->gguf, gguf_path) != 0) {
             snprintf(ctx->err, sizeof(ctx->err),
-                     "gguf_open(%s): %s",
-                     gguf_path, gguf_last_error());
+                     "gguf_open(%s) failed", gguf_path);
         } else {
             ctx->weights_arena = arena_new(64 * 1024 * 1024);
-            // Scratch starts tiny (1 MB) and doubles on demand. Each
-            // synthesize call ends with arena_reset, so resting
-            // size is just the first slab. With initial=64MB the app
-            // sat on 64MB of mostly-empty scratch even at idle; 1MB
-            // is plenty for the smallest stages and grows as needed.
             ctx->scratch_arena = arena_new(1 * 1024 * 1024);
             if (load_arch(ctx)) {
                 bind_weights(ctx);
@@ -327,20 +333,13 @@ void kittens_destroy(struct kittens_ctx * ctx) {
         if (ctx->weights_arena != NULL) {
             arena_free(ctx->weights_arena);
         }
-        if (ctx->gguf != NULL) {
-            gguf_close(ctx->gguf);
-        }
+        gguf_close(&ctx->gguf);
         free(ctx->cache);
         free(ctx);
     }
 }
 
-// ---------------------------------------------------------------------------
-// Lazy lookup of block weights by formatted name.
-// ---------------------------------------------------------------------------
-
 static struct tensor * named(struct kittens_ctx * ctx, const char * name) {
-    // Search-loop post-condition: i == cache_count means not found.
     int i = 0;
     while (i < ctx->cache_count
            && strcmp(ctx->cache[i].name, name) != 0) {
@@ -350,8 +349,8 @@ static struct tensor * named(struct kittens_ctx * ctx, const char * name) {
     if (i < ctx->cache_count) {
         result = ctx->cache[i].t;
     } else {
-        struct tensor * t = gguf_load_tensor(ctx->gguf,
-                                            ctx->weights_arena, name);
+        struct tensor * t = kt_load_tensor(&ctx->gguf,
+                                           ctx->weights_arena, name);
         if (t != NULL) {
             if (ctx->cache_count == ctx->cache_cap) {
                 int nc = ctx->cache_cap == 0
@@ -387,6 +386,9 @@ void kittens_audio_free(struct kittens_audio a) {
 void kittens_set_sgemm_impl(int impl) { tensor_set_sgemm_impl(impl); }
 int  kittens_get_sgemm_impl(void)     { return tensor_get_sgemm_impl(); }
 
+void kittens_set_carry_fp16(int mode) { g_carry_fp16 = mode; }
+int  kittens_get_carry_fp16(void)     { return g_carry_fp16; }
+
 uint64_t kittens_current_phys_footprint(void) {
     return tensor_current_phys_footprint();
 }
@@ -397,11 +399,6 @@ void kittens_reset_peak_phys_footprint(void) {
     tensor_reset_peak_phys_footprint();
 }
 
-// ---------------------------------------------------------------------------
-// Primitive helpers (mirror ggml/kittens-tts.c)
-// ---------------------------------------------------------------------------
-
-// LayerNorm over ne[0] with optional gamma/beta. eps configurable.
 static struct tensor * layer_norm(struct tensor * x, struct tensor * w,
                                  struct tensor * b, float eps) {
     struct tensor * h = tensor_norm(x, 0, eps);
@@ -410,13 +407,10 @@ static struct tensor * layer_norm(struct tensor * x, struct tensor * w,
     return h;
 }
 
-// AdaLayerNorm on (C, L) tensors. style:(style_dim,), fcW:(style_dim, 2C),
-// fcB:(2C,). Splits the projected style into gamma|beta and applies
-// out = normed * (1 + gamma) + beta with broadcast over L.
 static struct tensor * ada_layer_norm(struct tensor * x, struct tensor * style,
                                      struct tensor * fcW, struct tensor * fcB,
                                      int C) {
-    struct tensor * h = tensor_mul_mat(fcW, style);     // (2C,)
+    struct tensor * h = tensor_mul_mat(fcW, style);
     h = tensor_add(h, fcB);
     const size_t fsz = sizeof(float);
     struct tensor * gamma = tensor_view_1d(h, C, 0);
@@ -428,12 +422,6 @@ static struct tensor * ada_layer_norm(struct tensor * x, struct tensor * style,
     return out;
 }
 
-// AdaIN1D on NLC tensors x:(C, L). style:(style_dim,), fcW/fcB project
-// to 2C (gamma|beta). nW/nB are per-channel multiplicative norm
-// (may be NULL).
-//
-// Instance norm normalizes over the time axis. With ne[0]=C and ne[1]=L
-// we transpose to put L innermost, normalize, then transpose back.
 static struct tensor * ada_in_1d(struct tensor * x, struct tensor * style,
                                  struct tensor * fcW, struct tensor * fcB,
                                  struct tensor * nW, struct tensor * nB,
@@ -445,9 +433,9 @@ static struct tensor * ada_in_1d(struct tensor * x, struct tensor * style,
     struct tensor * beta  = tensor_view_1d(h, C, (size_t)C * fsz);
     struct tensor * gamma_c = tensor_cont(gamma);
     struct tensor * beta_c  = tensor_cont(beta);
-    struct tensor * x_t = tensor_cont(tensor_transpose(x));   // (L, C)
+    struct tensor * x_t = tensor_cont(tensor_transpose(x));
     struct tensor * n_t = tensor_norm(x_t, 0, 1e-5f);
-    struct tensor * n   = tensor_cont(tensor_transpose(n_t)); // (C, L)
+    struct tensor * n   = tensor_cont(tensor_transpose(n_t));
     if (nW != NULL) { n = tensor_mul(n, nW); }
     if (nB != NULL) { n = tensor_add(n, nB); }
     struct tensor * n_g = tensor_mul(n, gamma_c);
@@ -456,7 +444,6 @@ static struct tensor * ada_in_1d(struct tensor * x, struct tensor * style,
     return out;
 }
 
-// Snake activation: x + (1/alpha) * sin(alpha*x)^2. x:(C, L), alpha:(C,)
 static struct tensor * snake_1d(struct tensor * x, struct tensor * alpha) {
     struct tensor * ax = tensor_mul(x, alpha);
     struct tensor * s  = tensor_sin(ax);
@@ -465,43 +452,33 @@ static struct tensor * snake_1d(struct tensor * x, struct tensor * alpha) {
     return tensor_add(x, s2_over_a);
 }
 
-// Conv1d on NLC tensor x:(C, L). Returns NLC (Cout, Lout). Kernel kw
-// stored ne=(K, Cin, Cout). pad < 0 means SAME ((K-1)/2).
 static struct tensor * conv1d_nlc(struct tensor * x, struct tensor * kw,
                                  struct tensor * kb,
                                  int stride, int pad, int dilation) {
     const int K = (int)kw->ne[0];
     if (pad < 0) { pad = (K - 1) / 2; }
-    struct tensor * x_ncl = tensor_cont(tensor_transpose(x));   // (L, C)
+    struct tensor * x_ncl = tensor_cont(tensor_transpose(x));
     struct tensor * x_3d = tensor_reshape_3d(x_ncl,
                                      x_ncl->ne[0], x_ncl->ne[1], 1);
     struct tensor * y_3d = tensor_conv_1d(kw, x_3d, stride, pad, dilation);
     if (kb != NULL) {
-        // bias (Cout,) broadcast along L via ne[1] of y_3d which is Cout.
-        // y_3d ne=(Lout, Cout, 1). kb ne=(Cout,). We want to add per
-        // channel: build a (1, Cout, 1) view.
         struct tensor * b3 = tensor_reshape_3d(kb, 1, kb->ne[0], 1);
         y_3d = tensor_add(y_3d, b3);
     }
     struct tensor * y_2d = tensor_reshape_2d(y_3d, y_3d->ne[0], y_3d->ne[1]);
-    return tensor_cont(tensor_transpose(y_2d));             // (Cout, Lout) NLC
+    return tensor_cont(tensor_transpose(y_2d));
 }
 
-// Repeat-interleave 2x along the L axis: (C, L) -> (C, 2L).
-// output[c, 2l]   = x[c, l]
-// output[c, 2l+1] = x[c, l]
 static struct tensor * repeat_interleave_2x_nlc(struct tensor * x) {
     const int64_t C = x->ne[0];
     const int64_t L = x->ne[1];
     struct tensor * x4 = tensor_reshape_4d(x, C, L, 1, 1);
-    struct tensor * stacked = tensor_concat(x4, x4, 2);     // (C, L, 2, 1)
-    struct tensor * p = tensor_permute(stacked, 0, 2, 1, 3); // (C, 2, L, 1)
+    struct tensor * stacked = tensor_concat(x4, x4, 2);
+    struct tensor * p = tensor_permute(stacked, 0, 2, 1, 3);
     struct tensor * pc = tensor_cont(p);
     return tensor_reshape_2d(pc, C, 2 * L);
 }
 
-// Insert one zero between every pair of adjacent L-positions:
-// (C, L) -> (C, 2L), output[c, 2t]=x[c,t], output[c, 2t+1]=0.
 static struct tensor * insert_zeros_2x_nlc(struct tensor * x) {
     const int64_t C = x->ne[0];
     const int64_t L = x->ne[1];
@@ -514,9 +491,6 @@ static struct tensor * insert_zeros_2x_nlc(struct tensor * x) {
     return tensor_reshape_2d(pc, C, 2 * L);
 }
 
-// Depthwise conv-transpose-1d 2x (stride=2, padding=1, K=3) implemented
-// via insert-zeros + depthwise conv on the K-flipped kernel. pool_w
-// stored ne=(K, 1, C) with K-axis pre-flipped at convert time.
 static struct tensor * upsample_2x_dwT(struct tensor * x,
                                       struct tensor * pool_w,
                                       struct tensor * pool_b) {
@@ -536,14 +510,11 @@ static struct tensor * upsample_2x_dwT(struct tensor * x,
     return tensor_cont(tensor_transpose(y_2d));
 }
 
-// ConvTranspose1d on NLC: x:(Cin, L) -> (Cout, Lout). Kernel kw stored
-// ne=(K, Cout, Cin) (PyTorch (Cin, Cout, K) packed by the converter).
-// tensor_conv_transpose_1d handles symmetric padding internally.
 static struct tensor * conv_transpose_1d_nlc(struct tensor * x,
                                             struct tensor * kw,
                                             struct tensor * kb,
                                             int stride, int pad) {
-    struct tensor * b = tensor_cont(tensor_transpose(x));   // (L, Cin)
+    struct tensor * b = tensor_cont(tensor_transpose(x));
     struct tensor * b_3d = tensor_reshape_3d(b, b->ne[0], b->ne[1], 1);
     struct tensor * y_3d = tensor_conv_transpose_1d(kw, b_3d, stride, pad);
     if (kb != NULL) {
@@ -554,9 +525,6 @@ static struct tensor * conv_transpose_1d_nlc(struct tensor * x,
     return tensor_cont(tensor_transpose(y_2d));
 }
 
-// Reflection-pad LEFT only by 1 sample on NLC tensor x:(C, L).
-// Prepends x[:, 1:2] to x -> (C, L+1). Only n=1 supported (only use
-// in the model is iSTFT n=1).
 static struct tensor * reflection_pad_left(struct tensor * x, int n) {
     struct tensor * result = x;
     if (n > 0) {
@@ -570,31 +538,18 @@ static struct tensor * reflection_pad_left(struct tensor * x, int n) {
     return result;
 }
 
-// Broadcast a 1D style (C,) to a (C, L) tensor — every column a copy
-// of style. Output goes to the active arena set in kittens_synthesize.
 static struct tensor * style_bcast_CxL(struct tensor * style, int C, int L) {
     struct tensor * s2 = tensor_reshape_2d(style, C, 1);
     return tensor_repeat_to(s2, 2, C, L, 1, 1);
 }
 
-// ---------------------------------------------------------------------------
-// LSTM helpers (eager — no graph plumbing)
-// ---------------------------------------------------------------------------
-//
-// One direction of a bidir LSTM. ifgo gate order.
-//   x:  (in_size, T)
-//   W:  (in_size, 4H)
-//   R:  (H,       4H)
-//   b:  (4H,)
-//   h0, c0: (H,) — initial states (zero tensors)
-//   returns (H, T) packed
 static struct tensor * lstm_dir(struct arena * a,
                                 struct tensor * x, struct tensor * W,
                                 struct tensor * R, struct tensor * b,
                                 struct tensor * h0, struct tensor * c0,
                                 int H, int T, int reverse) {
-    struct tensor * Wx_full = tensor_mul_mat(W, x);     // (4H, T)
-    Wx_full = tensor_add(Wx_full, b);                   // (4H,) over T
+    struct tensor * Wx_full = tensor_mul_mat(W, x);
+    Wx_full = tensor_add(Wx_full, b);
     struct tensor * out = tensor_new_2d(a, H, T);
     struct tensor * h_prev = h0;
     struct tensor * c_prev = c0;
@@ -617,7 +572,6 @@ static struct tensor * lstm_dir(struct arena * a,
         struct tensor * ig  = tensor_mul(gi,  gg);
         struct tensor * c_t = tensor_add(fc, ig);
         struct tensor * h_t = tensor_mul(go, tensor_tanh(c_t));
-        // out is packed (H, T); write h_t into column t at byte t*H*4.
         memcpy((char *)out->data + (size_t)t * H * fsz,
                h_t->data, (size_t)H * fsz);
         h_prev = h_t;
@@ -626,8 +580,6 @@ static struct tensor * lstm_dir(struct arena * a,
     return out;
 }
 
-// Bidirectional LSTM: returns (2H, T), forward concatenated with
-// backward along ne[0].
 static struct tensor * bidir_lstm(struct arena * a,
                                  struct tensor * x,
                                  struct tensor * fW, struct tensor * fR,
@@ -640,10 +592,6 @@ static struct tensor * bidir_lstm(struct arena * a,
     struct tensor * bwd = lstm_dir(a, x, bW, bR, bb, h0, c0, H, T, 1);
     return tensor_concat(fwd, bwd, 0);
 }
-
-// ---------------------------------------------------------------------------
-// AdaINResBlock1D builder (used in F0/N paths and decoder)
-// ---------------------------------------------------------------------------
 
 static struct tensor * build_ada_block_1d(struct kittens_ctx * ctx, const char * prefix,
                                       struct tensor * x, struct tensor * style,
@@ -664,29 +612,21 @@ static struct tensor * build_ada_block_1d(struct kittens_ctx * ctx, const char *
     struct tensor * sv_b   = named_fmt(ctx, "%s.sv.bias",   prefix);
     struct tensor * pool_w = named_fmt(ctx, "%s.pool.weight", prefix);
     struct tensor * pool_b = named_fmt(ctx, "%s.pool.bias",   prefix);
-
     assert(n1_fcW != NULL && n2_fcW != NULL
            && c1_w != NULL && c2_w != NULL);
-
     const int upsample    = (pool_w != NULL);
     const int has_conv1x1 = (sv_w   != NULL);
     const int Cin = (int)x->ne[0];
-
     struct tensor * h = ada_in_1d(x, style, n1_fcW, n1_fcB,
                                  n1_nW, n1_nB, Cin);
     h = tensor_leaky_relu(h, 0.2f);
-
     if (upsample) { h = upsample_2x_dwT(h, pool_w, pool_b); }
-
     h = conv1d_nlc(h, c1_w, c1_b, 1, -1, 1);
-
     const int Cmid = (int)c1_w->ne[2];
     h = ada_in_1d(h, style, n2_fcW, n2_fcB,
                      n2_nW, n2_nB, Cmid);
     h = tensor_leaky_relu(h, 0.2f);
-
     h = conv1d_nlc(h, c2_w, c2_b, 1, -1, 1);
-
     struct tensor * shortcut = shortcut_in != NULL ? shortcut_in : x;
     struct tensor * res;
     if (upsample) {
@@ -697,155 +637,169 @@ static struct tensor * build_ada_block_1d(struct kittens_ctx * ctx, const char *
     } else {
         res = shortcut;
     }
-
     struct tensor * out = tensor_add(h, res);
     if (divide) { out = tensor_scale(out, 1.0f / sqrtf(2.0f)); }
     return out;
 }
 
-// ---------------------------------------------------------------------------
-// AdaINResBlockHiFiGAN (3 dilations, snake activation, residual)
-// ---------------------------------------------------------------------------
-//
-// x:(C, L). Returns (C, L). The block has 3 sub-iterations with
-// dilations (1, 3, 5); each sub-iteration is two AdaIN+snake+conv
-// passes plus a residual add.
-// Checkpoint helpers — copy tensor data to malloc'd host memory so we
-// can reset the scratch arena between sub-stages without losing the
-// state we need next. Without this, every intermediate tensor inside
-// build_hifi_block (~21 per dilation × 3 dilations) accumulates in
-// scratch and we OOM on iOS for long sentences.
 struct savept {
     int      ndim;
+    int      fp16;
     int64_t  ne[4];
     float *  data;
 };
 
+static void f32_to_f16(_Float16 * dst, const float * src, size_t n) {
+    for (size_t i = 0; i < n; i++) { dst[i] = (_Float16)src[i]; }
+}
+
+static void f16_to_f32(float * dst, const _Float16 * src, size_t n) {
+    for (size_t i = 0; i < n; i++) { dst[i] = (float)src[i]; }
+}
+
+static void carry_store(void * host, int fp16, size_t off,
+                        const float * src, size_t n) {
+    if (fp16) { f32_to_f16((_Float16 *)host + off, src, n); }
+    else      { memcpy((float *)host + off, src, n * sizeof(float)); }
+}
+
+static void carry_load(float * dst, const void * host, int fp16,
+                       size_t off, size_t n) {
+    if (fp16) { f16_to_f32(dst, (const _Float16 *)host + off, n); }
+    else      { memcpy(dst, (const float *)host + off, n * sizeof(float)); }
+}
+
+static float * host_alloc(size_t bytes) {
+    size_t mapped = 0;
+    float * p = (float *)arena_pages_alloc(bytes, &mapped);
+    assert(p != NULL);
+    return p;
+}
+
+static void host_free(float * p, size_t bytes) {
+    if (p != NULL) {
+        const size_t pg = arena_page_size();
+        arena_pages_free(p, (bytes + pg - 1) & ~(pg - 1));
+    }
+}
+
+static void host_retire_prefix(float * base, size_t * retired,
+                               size_t upto) {
+    const size_t pg = arena_page_size();
+    const size_t new_end = upto & ~(pg - 1);
+    if (new_end > *retired) {
+        munmap((char *)base + *retired, new_end - *retired);
+        *retired = new_end;
+    }
+}
+
+static void host_free_rest(float * base, size_t retired, size_t bytes) {
+    if (base != NULL) {
+        const size_t pg = arena_page_size();
+        const size_t total = (bytes + pg - 1) & ~(pg - 1);
+        if (total > retired) {
+            munmap((char *)base + retired, total - retired);
+        }
+    }
+}
+
 static struct savept save(const struct tensor * t) {
     struct savept p;
     p.ndim = t->ndim;
+    p.fp16 = 0;
     for (int i = 0; i < 4; i++) { p.ne[i] = t->ne[i]; }
     int64_t n = p.ne[0] * p.ne[1] * p.ne[2] * p.ne[3];
-    p.data = (float *)malloc((size_t)n * sizeof(float));
+    p.data = host_alloc((size_t)n * sizeof(float));
     memcpy(p.data, t->data, (size_t)n * sizeof(float));
+    return p;
+}
+
+static struct savept save16(const struct tensor * t) {
+    struct savept p;
+    p.ndim = t->ndim;
+    p.fp16 = g_carry_fp16 >= 1;
+    for (int i = 0; i < 4; i++) { p.ne[i] = t->ne[i]; }
+    int64_t n = p.ne[0] * p.ne[1] * p.ne[2] * p.ne[3];
+    if (p.fp16) {
+        p.data = host_alloc((size_t)n * 2);
+        f32_to_f16((_Float16 *)p.data, t->data, (size_t)n);
+    } else {
+        p.data = host_alloc((size_t)n * sizeof(float));
+        memcpy(p.data, t->data, (size_t)n * sizeof(float));
+    }
+    return p;
+}
+
+static struct savept savept_wrap(float * data, int64_t n0, int64_t n1,
+                                 int fp16) {
+    struct savept p;
+    p.ndim = 2;
+    p.fp16 = fp16;
+    p.ne[0] = n0; p.ne[1] = n1; p.ne[2] = 1; p.ne[3] = 1;
+    p.data = data;
     return p;
 }
 
 static struct tensor * restore(struct arena * a, const struct savept * p) {
     struct tensor * t = tensor_new_nd(a, p->ndim, p->ne);
     int64_t n = p->ne[0] * p->ne[1] * p->ne[2] * p->ne[3];
-    memcpy(t->data, p->data, (size_t)n * sizeof(float));
+    carry_load(t->data, p->data, p->fp16, 0, (size_t)n);
     return t;
 }
 
-static void savept_free(struct savept * p) {
-    if (p && p->data) { free(p->data); p->data = NULL; }
+struct hifi_out {
+    float * data;
+    int     C;
+    int64_t L;
+    int     fp16;
+};
+
+static size_t hifi_out_bytes(const struct hifi_out * h) {
+    return (size_t)h->C * (size_t)h->L * (h->fp16 ? 2u : 4u);
 }
 
-// ===========================================================================
-// build_hifi_block has TWO implementations, picked at compile time:
-//
-//   default                  — two-pass global-stats segmented. Peak
-//                              memory drops a further ~30% on top of
-//                              intra-k (~60% off the original baseline),
-//                              wall-clock is ~7% FASTER because pass B
-//                              reads the assembled h3 host buffer
-//                              instead of recomputing AdaIN1+snake+conv1.
-//                              Audio is audibly identical: log-STFT L1
-//                              ~0.008 (≪0.05 audible threshold),
-//                              PSNR ~100 dB, Pearson 1.000000, RMS
-//                              matches baseline to 4 decimal places.
-//                              The tiny residual divergence is fp32
-//                              vDSP reduction order between a
-//                              stride-C gather and the original's
-//                              channel-major contiguous row.
-//
-//   -DHIFI_INTRA_K_ONLY      — fall back to intra-k save/reset only.
-//                              Bit-identical to the prior shipped
-//                              path (cf. commit fd53535). Use to A/B
-//                              if you suspect the two-pass version.
-//
-// Two-pass is the default ship path. Flip one -D for the fallback.
-// ===========================================================================
+static void hifi_out_compress(struct hifi_out * h) {
+    if (g_carry_fp16 >= 1 && !h->fp16 && h->data != NULL) {
+        const size_t n = (size_t)h->C * (size_t)h->L;
+        _Float16 * dst = (_Float16 *)h->data;
+        for (size_t i = 0; i < n; i++) { dst[i] = (_Float16)h->data[i]; }
+        const size_t pg = arena_page_size();
+        const size_t total = (n * sizeof(float) + pg - 1) & ~(pg - 1);
+        const size_t keep  = (n * 2 + pg - 1) & ~(pg - 1);
+        if (total > keep) { munmap((char *)h->data + keep, total - keep); }
+        h->fp16 = 1;
+    }
+}
+
+static void savept_free(struct savept * p) {
+    if (p && p->data) {
+        int64_t n = p->ne[0] * p->ne[1] * p->ne[2] * p->ne[3];
+        host_free(p->data, (size_t)n * (p->fp16 ? 2u : 4u));
+        p->data = NULL;
+    }
+}
 
 #ifndef HIFI_INTRA_K_ONLY
-// ---------------------------------------------------------------------------
-// Two-pass segmented HiFi-GAN resblock — global-stats AdaIN.
-//
-// AdaIN's tensor_norm is instance-norm along the time axis: per channel,
-// (x - mean(x_c)) / std(x_c). Mean/std reduce over the full L, so the
-// op is non-local in time and simple overlap-add segmentation produces
-// the wrong answer (a previous attempt's audio diverged ~14% RMS).
-//
-// Two-pass fix:
-//   Pass A: loop over input segments, run AdaIN1 -> snake -> conv1 on
-//           each, accumulate per-channel sum + sum-of-squares of the
-//           clean middle of the post-conv1 tensor into running totals,
-//           then DISCARD the segment output. After the loop, finalize
-//           the global mean/istd of h3 (= conv1's output) per channel.
-//   Pass B: loop over segments again. Now we have both AdaIN1's input
-//           stats (from out_host) AND AdaIN2's input stats (from pass A),
-//           so the full chain (AdaIN1 -> snake -> conv1 -> AdaIN2 ->
-//           snake -> conv2) runs segment-by-segment with mathematically
-//           correct global statistics. Write h6's clean middle directly
-//           into out_host with the residual add.
-//   Repeat for k=0,1,2.
-//
-// Per-segment peak ≈ a few (C, seg_W+2*overlap) tensors ≈ tens of MB
-// regardless of how large L gets — the target ~30-50 MB win.
-//
-// Tunables: SEG_L is the clean-middle width per segment, OVERLAP is
-// the context window on each side (must exceed the conv stack's
-// receptive field on the kept positions). RF per side inside one k
-// stack = max_d * (K1-1) + (K2-1).
-//
-// In this model the conv kernels differ by hifi_block instance:
-//   gen.r0..r3 use K1=K2=3                  -> RF = 5*2 + 2 = 12
-//   nr0        uses K1=K2=7  (noise pre-r0) -> RF = 5*6 + 6 = 36
-//   nr1        uses K1=K2=11 (noise pre-r2) -> RF = 5*10 + 10 = 60
-//
-// OVERLAP=128 leaves 2x margin even on the K=11 case. (An earlier
-// OVERLAP=32 was big enough for gen.* but too small for nr1; the
-// boundary samples inside the 60-position RF were computed from
-// truncated context, drifting AdaIN2's input stats and audibly
-// degrading the output. log-STFT L1 0.108. With OVERLAP=128 the
-// clean middles are fully covered.)
-// ---------------------------------------------------------------------------
 
 #define HIFI_SEG_L         1024
 #define HIFI_SEG_OVERLAP    128
 
-// Per-channel mean and 1/std from a host buffer of shape (L, C)
-// channels-inner. CRITICAL: must match tensor_norm's fp32 algorithm
-// byte-for-byte, including its catastrophic-cancellation behaviour in
-// var = E[x^2] - E[x]^2.
-//
-// Why: tensor_norm in cpu/tensor.c uses vDSP_meanv/vDSP_measqv (fp32
-// SIMD reductions over a contiguous N-element row) and computes
-// var = meanSq - mean*mean in fp32. snake_1d adds a strictly
-// non-negative DC term every layer, so channels accumulate a large
-// |mean|/std ratio and the fp32 subtraction loses precision. The
-// baseline audio is the result of that biased istd. A "more
-// accurate" fp64 var produces a true value, larger by a fraction
-// of a percent on the worst channels, giving a slightly smaller
-// istd. Compounded across many AdaIN layers, the output drifts
-// uniformly quieter (Pearson 0.95, RMS -5.5%, log-STFT L1 0.108
-// in measurement). So precision-matching is REQUIRED for parity.
-//
-// Match the layout too: tensor_norm sees x_t as (L, C) with ne[0]=L
-// (channel-outer in memory) and reduces per channel over a
-// contiguous L-element row. Our host buffer is the opposite
-// (channels-inner). Gather channel c into `tmp` then run the same
-// stride-1 vDSP reduction — identical kernel, identical bit output.
-static void hifi_compute_stats_host(const float * host, int C, int64_t L,
+static void hifi_compute_stats_host(const void * host, int fp16,
+                                    int C, int64_t L,
                                     float * mean, float * istd) {
     float * tmp = (float *)malloc((size_t)L * sizeof(float));
     assert(tmp != NULL);
     const int64_t Cs = (int64_t)C;
+    const float * h32 = (const float *)host;
+    const _Float16 * h16 = (const _Float16 *)host;
     int c = 0;
     while (c < C) {
         int64_t t = 0;
-        while (t < L) { tmp[t] = host[t * Cs + c]; t++; }
+        if (fp16) {
+            while (t < L) { tmp[t] = (float)h16[t * Cs + c]; t++; }
+        } else {
+            while (t < L) { tmp[t] = h32[t * Cs + c]; t++; }
+        }
         float m, msq;
         vDSP_meanv (tmp, 1, &m,   (vDSP_Length)L);
         vDSP_measqv(tmp, 1, &msq, (vDSP_Length)L);
@@ -857,12 +811,6 @@ static void hifi_compute_stats_host(const float * host, int C, int64_t L,
     free(tmp);
 }
 
-// AdaIN variant taking precomputed global per-channel (mean, istd).
-// Same math as ada_in_1d except the in-place tensor_norm step
-// (mean/var computed locally over time) is replaced with a broadcast
-// affine: n = (x - mean) * istd. mean/istd are (C,) tensors so they
-// broadcast over the L axis of x. The downstream nW, nB, gamma, beta
-// chain is unchanged.
 static struct tensor * ada_in_1d_with_stats(struct tensor * x,
                                             struct tensor * style,
                                             struct tensor * fcW,
@@ -888,7 +836,7 @@ static struct tensor * ada_in_1d_with_stats(struct tensor * x,
         ((float *)istd_t->data)[c]   =  istd[c];
         c++;
     }
-    struct tensor * n = tensor_add(x, neg_mean);   // broadcasts (C,) over L
+    struct tensor * n = tensor_add(x, neg_mean);
     n = tensor_mul(n, istd_t);
     if (nW != NULL) { n = tensor_mul(n, nW); }
     if (nB != NULL) { n = tensor_add(n, nB); }
@@ -898,30 +846,24 @@ static struct tensor * ada_in_1d_with_stats(struct tensor * x,
     return out;
 }
 
-static struct tensor * build_hifi_block(struct kittens_ctx * ctx,
+static struct hifi_out build_hifi_block(struct kittens_ctx * ctx,
                                         const char * prefix,
-                                        struct tensor * x,
-                                        struct tensor * style) {
+                                        struct savept * px,
+                                        struct tensor * style,
+                                        int consume) {
     struct arena * sa = ctx->scratch_arena;
-    const int     C = (int)x->ne[0];
-    const int64_t L = x->ne[1];
+    const int     C = (int)px->ne[0];
+    const int64_t L = px->ne[1];
     static const int dilations[3] = { 1, 3, 5 };
     arena_set_active(sa);
-    // Save x, style at entry. Both are needed across the per-k
-    // segmented loop below; arena_reset between segments would wipe
-    // them otherwise.
-    struct savept ps  = save(style);
-    struct savept px0 = save(x);
+    struct savept ps = save(style);
     arena_reset(sa);
-    fprintf(stderr, "    [OOM hifi2-entry %-9s L=%-6lld phys=%7.1f MB]\n",
-            prefix, (long long)L, rss_mb());
-    // Small inputs fall through to the same one-segment path as the
-    // non-segmented version — peeling the loop is more overhead than
-    // segmentation saves below the SEG_L+2*OVERLAP threshold.
-    struct tensor * result = NULL;
+    trace(info, "[RSS hifi2-entry %-9s L=%-6lld phys=%7.1f MB]",
+          prefix, (long long)L, rss_mb());
+    struct hifi_out result = { NULL, C, L, 0 };
     if (L <= (int64_t)HIFI_SEG_L + 2 * HIFI_SEG_OVERLAP) {
-        struct tensor * out = restore(sa, &px0);
-        savept_free(&px0);
+        struct tensor * out = restore(sa, px);
+        if (consume) { savept_free(px); }
         style = restore(sa, &ps);
         for (int k = 0; k < 3; k++) {
             if (k > 0) {
@@ -956,18 +898,39 @@ static struct tensor * build_hifi_block(struct kittens_ctx * ctx,
             h = conv1d_nlc(h, c2_w, c2_b, 1, (K2 - 1) / 2, 1);
             out = tensor_add(out, h);
         }
-        result = out;
-    } else {
-        // Two-pass segmented path. out_host carries the residual
-        // stream across k iterations; h3_host stores the assembled
-        // post-conv1 intermediate so pass B reads it directly
-        // instead of recomputing AdaIN1 + snake + conv1.
         const size_t total_floats = (size_t)C * (size_t)L;
-        float *  out_host = (float *)malloc(total_floats * sizeof(float));
-        float *  h3_host  = (float *)malloc(total_floats * sizeof(float));
-        assert(out_host != NULL && h3_host != NULL);
-        memcpy(out_host, px0.data, total_floats * sizeof(float));
-        savept_free(&px0);
+        result.fp16 = g_carry_fp16 >= 1;
+        if (result.fp16) {
+            result.data = host_alloc(total_floats * 2);
+            f32_to_f16((_Float16 *)result.data, out->data, total_floats);
+        } else {
+            result.data = host_alloc(total_floats * sizeof(float));
+            memcpy(result.data, out->data, total_floats * sizeof(float));
+        }
+    } else {
+        const size_t total_floats = (size_t)C * (size_t)L;
+        const int    t2   = g_carry_fp16 >= 2;
+        const size_t elem = t2 ? 2u : 4u;
+        float * out_host = NULL;
+        if (consume && px->fp16 == t2) {
+            out_host = px->data;
+            px->data = NULL;
+        } else {
+            out_host = host_alloc(total_floats * elem);
+            if (t2) {
+                if (px->fp16) {
+                    memcpy(out_host, px->data, total_floats * 2);
+                } else {
+                    f32_to_f16((_Float16 *)out_host, px->data,
+                               total_floats);
+                }
+            } else {
+                carry_load(out_host, px->data, px->fp16, 0, total_floats);
+            }
+            if (consume) { savept_free(px); }
+        }
+        float * h3_host = (float *)malloc(total_floats * elem);
+        assert(h3_host != NULL);
         float *  mean_in   = (float *)malloc((size_t)C * sizeof(float));
         float *  istd_in   = (float *)malloc((size_t)C * sizeof(float));
         float *  mean_mid  = (float *)malloc((size_t)C * sizeof(float));
@@ -991,28 +954,8 @@ static struct tensor * build_hifi_block(struct kittens_ctx * ctx,
             struct tensor * c2_b   = named_fmt(ctx, "%s.c2.%d.bias",   prefix, k);
             const int K1 = (int)c1_w->ne[0];
             const int K2 = (int)c2_w->ne[0];
-            // AdaIN1 input stats: out_host is fully known.
-            hifi_compute_stats_host(out_host, C, L, mean_in, istd_in);
-            // ----- Pass A: per-segment AdaIN1 -> snake -> conv1.
-            //               Copy the clean middle of h3 into h3_host
-            //               at its global position. After the loop
-            //               h3_host holds the assembled full h3
-            //               (channels-inner layout).
-            //
-            // Why store h3 instead of recomputing it in pass B:
-            //   1) Pass B no longer redoes AdaIN1 + snake + conv1
-            //      per segment — total compute drops from ~1.5x of
-            //      the non-segmented path to ~1x.
-            //   2) AdaIN2's input stats come from h3_host via the
-            //      same fp32 vDSP reduction tensor_norm uses on the
-            //      full tensor in baseline — bit-parity, not just
-            //      "close enough".
-            //   3) Pass B's segment input includes the OVERLAP
-            //      region of h3. Since adjacent segments' clean
-            //      middles already cover those positions in h3_host,
-            //      a stride read gives REAL h3 values there (not the
-            //      truncated-context values pass A produced inside
-            //      its own segment overlap, which would be wrong).
+            hifi_compute_stats_host(out_host, t2, C, L,
+                                    mean_in, istd_in);
             int64_t a = 0;
             while (a < L) {
                 int64_t b  = a + (int64_t)HIFI_SEG_L;
@@ -1026,29 +969,23 @@ static struct tensor * build_hifi_block(struct kittens_ctx * ctx,
                 const int     cm_n   = (int)(b - a);
                 arena_reset(sa);
                 struct tensor * seg_in = tensor_new_2d(sa, C, seg_W);
-                memcpy(seg_in->data,
-                       out_host + (size_t)lo * (size_t)C,
-                       (size_t)seg_W * (size_t)C * sizeof(float));
+                carry_load(seg_in->data, out_host, t2,
+                           (size_t)lo * (size_t)C,
+                           (size_t)seg_W * (size_t)C);
                 struct tensor * sty = restore(sa, &ps);
                 struct tensor * h = ada_in_1d_with_stats(
                     seg_in, sty, a1_fcW, a1_fcB, a1_nW, a1_nB, C,
                     mean_in, istd_in);
                 h = snake_1d(h, al1);
                 h = conv1d_nlc(h, c1_w, c1_b, 1, d * (K1 - 1) / 2, d);
-                memcpy(h3_host + (size_t)a * (size_t)C,
-                       (const float *)h->data
-                           + (size_t)cm_off * (size_t)C,
-                       (size_t)cm_n * (size_t)C * sizeof(float));
+                carry_store(h3_host, t2, (size_t)a * (size_t)C,
+                            (const float *)h->data
+                                + (size_t)cm_off * (size_t)C,
+                            (size_t)cm_n * (size_t)C);
                 a = b;
             }
-            // AdaIN2 input stats from the assembled h3_host. Same
-            // fp32 vDSP reduction tensor_norm would do on full h3.
-            hifi_compute_stats_host(h3_host, C, L, mean_mid, istd_mid);
-            // ----- Pass B: per-segment AdaIN2 -> snake -> conv2.
-            //               Input is sliced from h3_host (REAL h3
-            //               values everywhere including overlap).
-            //               Clean middle of conv2 output is residual-
-            //               added back into out_host.
+            hifi_compute_stats_host(h3_host, t2, C, L,
+                                    mean_mid, istd_mid);
             a = 0;
             while (a < L) {
                 int64_t b  = a + (int64_t)HIFI_SEG_L;
@@ -1062,9 +999,9 @@ static struct tensor * build_hifi_block(struct kittens_ctx * ctx,
                 const int     cm_n   = (int)(b - a);
                 arena_reset(sa);
                 struct tensor * seg_h3 = tensor_new_2d(sa, C, seg_W);
-                memcpy(seg_h3->data,
-                       h3_host + (size_t)lo * (size_t)C,
-                       (size_t)seg_W * (size_t)C * sizeof(float));
+                carry_load(seg_h3->data, h3_host, t2,
+                           (size_t)lo * (size_t)C,
+                           (size_t)seg_W * (size_t)C);
                 struct tensor * sty = restore(sa, &ps);
                 struct tensor * h = ada_in_1d_with_stats(
                     seg_h3, sty, a2_fcW, a2_fcB, a2_nW, a2_nB, C,
@@ -1073,20 +1010,30 @@ static struct tensor * build_hifi_block(struct kittens_ctx * ctx,
                 h = conv1d_nlc(h, c2_w, c2_b, 1, (K2 - 1) / 2, 1);
                 const float * src = (const float *)h->data
                                   + (size_t)cm_off * (size_t)C;
-                float * dst = out_host + (size_t)a * (size_t)C;
                 const int total_n = cm_n * C;
-                int i = 0;
-                while (i < total_n) { dst[i] += src[i]; i++; }
+                if (t2) {
+                    _Float16 * dst = (_Float16 *)out_host
+                                   + (size_t)a * (size_t)C;
+                    int i = 0;
+                    while (i < total_n) {
+                        dst[i] = (_Float16)((float)dst[i] + src[i]);
+                        i++;
+                    }
+                } else {
+                    float * dst = out_host + (size_t)a * (size_t)C;
+                    int i = 0;
+                    while (i < total_n) { dst[i] += src[i]; i++; }
+                }
                 a = b;
             }
-            fprintf(stderr, "    [OOM hifi2-k%d-end %-9s     phys=%7.1f MB]\n",
-                    k, prefix, rss_mb());
+            trace(info, "[RSS hifi2-k%d-end %-9s     phys=%7.1f MB]",
+                  k, prefix, rss_mb());
         }
-        // Materialize the residual stream as an arena tensor.
         arena_reset(sa);
-        result = tensor_new_2d(sa, C, L);
-        memcpy(result->data, out_host, total_floats * sizeof(float));
-        free(out_host);  free(h3_host);
+        result.data = out_host;
+        result.fp16 = t2;
+        hifi_out_compress(&result);
+        free(h3_host);
         free(mean_in);   free(istd_in);
         free(mean_mid);  free(istd_mid);
     }
@@ -1094,23 +1041,8 @@ static struct tensor * build_hifi_block(struct kittens_ctx * ctx,
     return result;
 }
 
-#else   // HIFI_INTRA_K_ONLY — fallback intra-k save/reset only
+#else
 
-// Intra-k save/reset between major operations of build_hifi_block.
-// Snapshots both live tensors (out, h) to host, wipes the scratch
-// arena (freeing every intermediate the just-finished op left in
-// it), then restores them along with style. Mathematically a no-op:
-// same tensor values before and after, just fewer dead allocations
-// crowding the arena's high-water mark.
-//
-// Why: ada_in_1d and conv1d_nlc each leave 3-5 intermediates of size
-// (C, L) in the arena that the next op no longer needs but can't
-// free (arena is bump-allocator). Across the 6 ops per k iteration
-// they accumulate to ~10-15 dead (C, L) tensors at the peak. Resetting
-// between ops bounds per-call peak to one op's own internal scratch,
-// which is what dominates the iOS RSS spike during long utterances.
-// Cost per call: a couple of (C, L) memcpys — well under 1% of synth
-// wall-clock.
 static void hifi_reset_after_op(struct arena * sa,
                                 struct tensor ** out_p,
                                 struct tensor ** h_p,
@@ -1124,25 +1056,20 @@ static void hifi_reset_after_op(struct arena * sa,
     *style_p = restore(sa, ps);
 }
 
-static struct tensor * build_hifi_block(struct kittens_ctx * ctx, const char * prefix,
-                                    struct tensor * x, struct tensor * style) {
+static struct hifi_out build_hifi_block(struct kittens_ctx * ctx, const char * prefix,
+                                    struct savept * px, struct tensor * style,
+                                    int consume) {
     struct arena * sa = ctx->scratch_arena;
-    const int C = (int)x->ne[0];
+    const int     C = (int)px->ne[0];
+    const int64_t L = px->ne[1];
     static const int dilations[3] = { 1, 3, 5 };
-    // Save x AND style to host THEN arena_reset BEFORE k=0. Without
-    // this, k=0's ~350 MB working set stacks on top of whatever the
-    // caller left in arena (typically ~600 MB during noise-contribs)
-    // and per-call peak balloons past iOS's process limit. The k>0
-    // resets inside the loop already follow this pattern; the missing
-    // one was at entry.
     struct savept ps = save(style);
-    struct savept px0 = save(x);
     arena_reset(sa);
-    struct tensor * out = restore(sa, &px0);
+    struct tensor * out = restore(sa, px);
+    if (consume) { savept_free(px); }
     style = restore(sa, &ps);
-    savept_free(&px0);
-    fprintf(stderr, "    [OOM hifi-entry  %-9s     phys=%7.1f MB]\n",
-            prefix, rss_mb());
+    trace(info, "[RSS hifi-entry  %-9s     phys=%7.1f MB]",
+          prefix, rss_mb());
     for (int k = 0; k < 3; k++) {
         if (k > 0) {
             struct savept po = save(out);
@@ -1177,22 +1104,20 @@ static struct tensor * build_hifi_block(struct kittens_ctx * ctx, const char * p
         hifi_reset_after_op(sa, &out, &h, &ps, &style);
         h = snake_1d(h, al2);
         h = conv1d_nlc(h, c2_w, c2_b, 1, (K2 - 1) / 2, 1);
-        // No reset before the residual add — tensor_add consumes h
-        // and produces the new `out`, then the loop top either exits
-        // or runs the k>0 save/reset which clears everything.
         out = tensor_add(out, h);
-        fprintf(stderr, "    [OOM hifi-k%d-end %-9s     phys=%7.1f MB]\n",
-                k, prefix, rss_mb());
+        trace(info, "[RSS hifi-k%d-end %-9s     phys=%7.1f MB]",
+              k, prefix, rss_mb());
     }
     savept_free(&ps);
-    return out;
+    const size_t total_floats = (size_t)C * (size_t)L;
+    struct hifi_out result = { NULL, C, L, 0 };
+    result.data = host_alloc(total_floats * sizeof(float));
+    memcpy(result.data, out->data, total_floats * sizeof(float));
+    hifi_out_compress(&result);
+    return result;
 }
 
-#endif  // !HIFI_INTRA_K_ONLY
-
-// ---------------------------------------------------------------------------
-// BERT/Albert encoder
-// ---------------------------------------------------------------------------
+#endif
 
 static struct tensor * build_albert(struct kittens_ctx * ctx, int L,
                                 const int32_t * ids,
@@ -1201,7 +1126,6 @@ static struct tensor * build_albert(struct kittens_ctx * ctx, int L,
     const struct arch * a = &ctx->arch;
     const struct weights * W = &ctx->W;
     struct arena * sa = ctx->scratch_arena;
-
     struct tensor * h = tensor_get_rows(W->e_word, ids,  L);
     struct tensor * p = tensor_get_rows(W->e_pos,  pos,  L);
     struct tensor * t = tensor_get_rows(W->e_type, type, L);
@@ -1210,20 +1134,6 @@ static struct tensor * build_albert(struct kittens_ctx * ctx, int L,
     h = layer_norm(h, W->e_ln_w, W->e_ln_b, a->ln_eps);
     h = tensor_mul_mat(W->proj_w, h);
     h = tensor_add(h, W->proj_b);
-    // Save h, reset arena, restore: clears the embed-stage
-    // intermediates (three get_rows row tensors, the two adds, the
-    // layer_norm scratch, the proj matmul + bias add) before the
-    // 24-layer stack starts piling on its own ~15-20 MB per layer.
-    // h is the only carry — shape (hidden, L), maybe 800 KB at L=200.
-    // Mirrors the inter-iteration save/reset pattern from
-    // build_hifi_block's k loop above.
-    //
-    // Invariant for save(): the carry must be PACKED, since save()
-    // does `memcpy(p.data, t->data, prod(ne) * sizeof(float))` with
-    // no stride awareness. h here is the output of tensor_add(...,
-    // proj_b), and tensor_apply_binop always allocates a fresh packed
-    // buffer — so h is packed at save time. The assert below pins
-    // that invariant down in case anyone moves the save site.
     assert(tensor_is_packed(h));
     {
         struct savept p_h = save(h);
@@ -1233,17 +1143,7 @@ static struct tensor * build_albert(struct kittens_ctx * ctx, int L,
     }
     const float kq_scale = 1.0f / sqrtf((float)a->head_dim);
     for (int il = 0; il < a->n_layers; il++) {
-        // Per-layer save/reset. Without this, each layer's q/k/v
-        // matmul outputs (~hidden*L each), reshape/permute copies,
-        // the (L, L, n_heads) attention matrix, kqv, att_out, the
-        // ffn_dim*L FFN intermediate, and a half-dozen smaller
-        // tensors stack across all 24 layers and the function peaks
-        // at the cumulative sum (~334 MB at L=211). With per-layer
-        // reset the peak is one layer's worth (~20-40 MB).
         if (il > 0) {
-            // h here is the output of the previous layer's final
-            // layer_norm -> tensor_add (in layer_norm), always
-            // packed. Same invariant as the pre-loop save.
             assert(tensor_is_packed(h));
             struct savept p_h = save(h);
             arena_reset(sa);
@@ -1257,15 +1157,15 @@ static struct tensor * build_albert(struct kittens_ctx * ctx, int L,
         q = tensor_reshape_4d(q, a->head_dim, a->n_heads, L, 1);
         k = tensor_reshape_4d(k, a->head_dim, a->n_heads, L, 1);
         v = tensor_reshape_4d(v, a->head_dim, a->n_heads, L, 1);
-        q = tensor_permute(q, 0, 2, 1, 3);     // (head_dim, L, n_heads, 1)
+        q = tensor_permute(q, 0, 2, 1, 3);
         k = tensor_permute(k, 0, 2, 1, 3);
         v = tensor_permute(v, 0, 2, 1, 3);
-        v = tensor_cont(tensor_transpose(v));  // (L, head_dim, n_heads, 1)
-        struct tensor * kq = tensor_mul_mat(k, q);     // (L, L, n_heads, 1)
+        v = tensor_cont(tensor_transpose(v));
+        struct tensor * kq = tensor_mul_mat(k, q);
         kq = tensor_softmax(kq, 0, kq_scale);
-        struct tensor * kqv = tensor_mul_mat(v, kq);   // (head_dim, L, n_heads)
-        kqv = tensor_permute(kqv, 0, 2, 1, 3);         // (head_dim, n_heads, L)
-        kqv = tensor_cont_2d(kqv, a->hidden, L);       // (hidden, L)
+        struct tensor * kqv = tensor_mul_mat(v, kq);
+        kqv = tensor_permute(kqv, 0, 2, 1, 3);
+        kqv = tensor_cont_2d(kqv, a->hidden, L);
         struct tensor * att_out =
             tensor_add(tensor_mul_mat(W->o_w, kqv), W->o_b);
         h = tensor_add(att_out, residual);
@@ -1281,10 +1181,6 @@ static struct tensor * build_albert(struct kittens_ctx * ctx, int L,
     return h;
 }
 
-// ---------------------------------------------------------------------------
-// PredictorTextEncoder
-// ---------------------------------------------------------------------------
-
 static struct tensor * build_pred_text(struct kittens_ctx * ctx,
                                        struct tensor * bert_out,
                                        struct tensor * style,
@@ -1295,24 +1191,20 @@ static struct tensor * build_pred_text(struct kittens_ctx * ctx,
     const int C = 128;
     const int H = ctx->arch.lstm_hidden;
     struct tensor * s_bcast = style_bcast_CxL(style, C, L);
-    struct tensor * x = tensor_concat(bert_out, s_bcast, 0);   // (384, L)
+    struct tensor * x = tensor_concat(bert_out, s_bcast, 0);
     struct tensor * y = bidir_lstm(sa, x,
                                    W->pt_l0_fW, W->pt_l0_fR, W->pt_l0_fb,
                                    W->pt_l0_bW, W->pt_l0_bR, W->pt_l0_bb,
                                    h0, c0, H, L);
     struct tensor * y1 = ada_layer_norm(y, style, W->pt_fc1_w,
                                         W->pt_fc1_b, C);
-    struct tensor * x2 = tensor_concat(y1, s_bcast, 0);        // (256, L)
+    struct tensor * x2 = tensor_concat(y1, s_bcast, 0);
     struct tensor * y2 = bidir_lstm(sa, x2,
                                     W->pt_l2_fW, W->pt_l2_fR, W->pt_l2_fb,
                                     W->pt_l2_bW, W->pt_l2_bR, W->pt_l2_bb,
                                     h0, c0, H, L);
     return ada_layer_norm(y2, style, W->pt_fc3_w, W->pt_fc3_b, C);
 }
-
-// ---------------------------------------------------------------------------
-// AcousticTextEncoder
-// ---------------------------------------------------------------------------
 
 static struct tensor * build_acoustic(struct kittens_ctx * ctx,
                                       const int32_t * ids,
@@ -1321,7 +1213,7 @@ static struct tensor * build_acoustic(struct kittens_ctx * ctx,
     const struct weights * W = &ctx->W;
     struct arena * sa = ctx->scratch_arena;
     const int H = ctx->arch.lstm_hidden;
-    struct tensor * x = tensor_get_rows(W->ac_embd, ids, L);  // (128, L) NLC
+    struct tensor * x = tensor_get_rows(W->ac_embd, ids, L);
     for (int i = 0; i < 2; i++) {
         struct tensor * cnnW = (i == 0) ? W->ac_c0_w : W->ac_c1_w;
         struct tensor * cnnB = (i == 0) ? W->ac_c0_b : W->ac_c1_b;
@@ -1336,23 +1228,17 @@ static struct tensor * build_acoustic(struct kittens_ctx * ctx,
         struct tensor * y_3d = tensor_conv_1d(cnnW, x_ncl_3d, 1, pad, 1);
         struct tensor * b3 = tensor_reshape_3d(cnnB, 1, cnnB->ne[0], 1);
         y_3d = tensor_add(y_3d, b3);
-
         struct tensor * y_2d = tensor_reshape_2d(y_3d, y_3d->ne[0], y_3d->ne[1]);
         x = tensor_cont(tensor_transpose(y_2d));
         x = layer_norm(x, lnG, lnB, 1e-5f);
         x = tensor_leaky_relu(x, 0.2f);
     }
-
     struct tensor * y = bidir_lstm(sa, x,
                                   W->ac_l_fW, W->ac_l_fR, W->ac_l_fb,
                                   W->ac_l_bW, W->ac_l_bR, W->ac_l_bb,
                                   h0, c0, H, L);
     return y;
 }
-
-// ---------------------------------------------------------------------------
-// TextStage orchestrator
-// ---------------------------------------------------------------------------
 
 struct textstage_outs {
     struct tensor * prosody256;
@@ -1370,12 +1256,6 @@ static struct textstage_outs build_textstage(struct kittens_ctx * ctx,
                                              struct tensor * c0) {
     const struct weights * W = &ctx->W;
     struct arena * sa = ctx->scratch_arena;
-    // build_albert now resets the scratch arena between its
-    // transformer layers to bound its peak (24 layers worth of dead
-    // q/k/v/attn/ffn intermediates was the 334 MB stage-1 spike).
-    // Those resets would wipe style_pr / h0 / c0 (allocated by the
-    // caller in kittens_synthesize and needed AFTER bert), so snapshot
-    // them to host across the call.
     struct savept p_sty = save(style_pr);
     struct savept p_h0  = save(h0);
     struct savept p_c0  = save(c0);
@@ -1387,9 +1267,9 @@ static struct textstage_outs build_textstage(struct kittens_ctx * ctx,
     savept_free(&p_h0);
     savept_free(&p_c0);
     struct tensor * bert_proj = tensor_add(
-        tensor_mul_mat(W->bert_enc_w, bert), W->bert_enc_b);   // (256, L)
+        tensor_mul_mat(W->bert_enc_w, bert), W->bert_enc_b);
     struct tensor * prosody = build_pred_text(ctx, bert_proj, style_pr,
-                                              h0, c0, L);      // (128, L)
+                                              h0, c0, L);
     struct tensor * s_bcast = style_bcast_CxL(style_pr,
                                               ctx->arch.style_dim, L);
     struct tensor * prosody256 = tensor_concat(prosody, s_bcast, 0);
@@ -1405,13 +1285,9 @@ static struct textstage_outs build_textstage(struct kittens_ctx * ctx,
     return r;
 }
 
-// ---------------------------------------------------------------------------
-// GenFront: shared LSTM + 6 AdaINResBlock1D + f0_proj / n_proj
-// ---------------------------------------------------------------------------
-
 struct genfront_outs {
-    struct tensor * f0_proj;   // (1, 2F)
-    struct tensor * n_proj;    // (1, 2F)
+    struct tensor * f0_proj;
+    struct tensor * n_proj;
 };
 
 static struct genfront_outs build_genfront(struct kittens_ctx * ctx,
@@ -1442,10 +1318,6 @@ static struct genfront_outs build_genfront(struct kittens_ctx * ctx,
     return r;
 }
 
-// ---------------------------------------------------------------------------
-// Decoder
-// ---------------------------------------------------------------------------
-
 static struct tensor * build_decoder(struct kittens_ctx * ctx,
                                      struct tensor * text_lr,
                                      struct tensor * f0_proj,
@@ -1475,11 +1347,234 @@ static struct tensor * build_decoder(struct kittens_ctx * ctx,
     return x;
 }
 
-// ---------------------------------------------------------------------------
-// Noise contributions (sine excitation + STFT analysis + noise_res blocks)
-// ---------------------------------------------------------------------------
+struct noise_outs { struct hifi_out nr0; struct hifi_out nr1; };
 
-struct noise_outs { struct tensor * nr0; struct tensor * nr1; };
+#ifndef NOISE_NO_SEG
+
+#define NOISE_SEG_F   256
+#define NOISE_SEG_U 16384
+#define NOISE_SEG_V  4096
+
+struct noise_hosts {
+    const float * fpf;
+    const float * ps;
+    const float * f0;
+    const float * srange;
+    int64_t       Tf;
+};
+
+static void noise_singen_segment(struct kittens_ctx * ctx,
+                                 const struct noise_hosts * h,
+                                 int64_t fa, int64_t fb,
+                                 void * out_h) {
+    struct arena * sa = ctx->scratch_arena;
+    const int   hop    = 300;
+    const float sr     = 24000.0f;
+    const float two_pi = 2.0f * (float)M_PI;
+    const int64_t nf = fb - fa;
+    const int64_t nt = nf * hop;
+    arena_reset(sa);
+    struct tensor * fpf_t = tensor_new_2d(sa, 9, nf);
+    memcpy(fpf_t->data, h->fpf + 9 * fa, (size_t)(9 * nf) * sizeof(float));
+    struct tensor * ps_t = tensor_new_2d(sa, 9, nf);
+    memcpy(ps_t->data, h->ps + 9 * fa, (size_t)(9 * nf) * sizeof(float));
+    struct tensor * s_t = tensor_new_1d(sa, hop);
+    memcpy(s_t->data, h->srange, (size_t)hop * sizeof(float));
+    struct tensor * fpf_3d = tensor_reshape_3d(fpf_t, 9, nf, 1);
+    struct tensor * s_3d   = tensor_reshape_3d(s_t, 1, 1, hop);
+    struct tensor * fpf_x  = tensor_repeat_to(fpf_3d, 3, 9, nf, hop, 1);
+    struct tensor * s_x    = tensor_repeat_to(s_3d,   3, 9, nf, hop, 1);
+    struct tensor * within = tensor_mul(fpf_x, s_x);
+    within = tensor_scale(within, two_pi / sr);
+    struct tensor * ps_3d = tensor_reshape_3d(ps_t, 9, nf, 1);
+    struct tensor * ps_x  = tensor_repeat_to(ps_3d, 3, 9, nf, hop, 1);
+    struct tensor * phase = tensor_add(ps_x, within);
+    phase = tensor_cont(tensor_permute(phase, 0, 2, 1, 3));
+    phase = tensor_reshape_2d(phase, 9, nt);
+    struct tensor * sines = tensor_scale(tensor_sin(phase), 0.1f);
+    struct tensor * voiced = tensor_new_2d(sa, 1, nt);
+    for (int64_t f = fa; f < fb; f++) {
+        const float v = h->f0[f] > 0.0f ? 1.0f : 0.0f;
+        float * dst = voiced->data + (f - fa) * hop;
+        for (int s = 0; s < hop; s++) { dst[s] = v; }
+    }
+    struct tensor * sin_gen = tensor_mul(sines, voiced);
+    memcpy((float *)out_h + 9 * fa * hop, sin_gen->data,
+           (size_t)(9 * nt) * sizeof(float));
+}
+
+static void noise_stft_segment(struct kittens_ctx * ctx,
+                               const void * exc_h, int64_t T_audio,
+                               int64_t ua, int64_t ub, float eps,
+                               void * stft_h) {
+    struct arena * sa = ctx->scratch_arena;
+    const int c16 = g_carry_fp16 >= 1;
+    const int64_t nu = ub - ua;
+    const int64_t W  = (nu - 1) * 5 + 20;
+    const int64_t T0 = ua * 5 - 10;
+    arena_reset(sa);
+    struct tensor * slice = tensor_new_2d(sa, 1, W);
+    const float * e32 = (const float *)exc_h;
+    for (int64_t i = 0; i < W; i++) {
+        const int64_t t = T0 + i;
+        slice->data[i] = (t >= 0 && t < T_audio) ? e32[t] : 0.0f;
+    }
+    struct tensor * fr = named_fmt(ctx, "stft_fwd.real");
+    struct tensor * fi = named_fmt(ctx, "stft_fwd.imag");
+    struct tensor * st_r = conv1d_nlc(slice, fr, NULL, 5, 0, 1);
+    struct tensor * st_i = conv1d_nlc(slice, fi, NULL, 5, 0, 1);
+    struct tensor * eps_seg = tensor_new_1d(sa, 1);
+    eps_seg->data[0] = eps;
+    struct tensor * re2 = tensor_mul(st_r, st_r);
+    struct tensor * im2 = tensor_mul(st_i, st_i);
+    struct tensor * mag2 = tensor_add(re2, im2);
+    mag2 = tensor_add(mag2, eps_seg);
+    struct tensor * mag = tensor_sqrt(mag2);
+    struct tensor * phi = tensor_atan2(st_i, st_r);
+    struct tensor * out = tensor_concat(mag, phi, 0);
+    carry_store(stft_h, c16, (size_t)(22 * ua), out->data,
+                (size_t)(22 * nu));
+}
+
+static void noise_conv_blocks(struct kittens_ctx * ctx,
+                              const void * in_h, int Cin, int64_t Lin,
+                              const char * w_name, const char * b_name,
+                              int stride, int pad,
+                              void * out_h, int Cout, int64_t Lout) {
+    struct arena * sa = ctx->scratch_arena;
+    const int c16 = g_carry_fp16 >= 1;
+    struct tensor * w = named_fmt(ctx, "%s", w_name);
+    struct tensor * b = named_fmt(ctx, "%s", b_name);
+    const int K = (int)w->ne[0];
+    int64_t va = 0;
+    while (va < Lout) {
+        int64_t vb = va + (int64_t)NOISE_SEG_V;
+        if (vb > Lout) { vb = Lout; }
+        const int64_t nv = vb - va;
+        const int64_t W  = (nv - 1) * stride + K;
+        const int64_t U0 = va * stride - pad;
+        arena_reset(sa);
+        struct tensor * slice = tensor_new_2d(sa, Cin, W);
+        for (int64_t i = 0; i < W; i++) {
+            const int64_t u = U0 + i;
+            float * dst = slice->data + i * Cin;
+            if (u >= 0 && u < Lin) {
+                carry_load(dst, in_h, c16, (size_t)(u * Cin),
+                           (size_t)Cin);
+            } else {
+                memset(dst, 0, (size_t)Cin * sizeof(float));
+            }
+        }
+        struct tensor * y = conv1d_nlc(slice, w, b, stride, 0, 1);
+        carry_store(out_h, c16, (size_t)(va * Cout), y->data,
+                    (size_t)(nv * Cout));
+        va = vb;
+    }
+}
+
+static struct noise_outs build_noise_contribs(struct kittens_ctx * ctx,
+                                              struct tensor * f0_proj,
+                                              struct tensor * style_aco,
+                                              struct tensor * harmonics,
+                                              struct tensor * s_range,
+                                              struct tensor * eps_t,
+                                              int F) {
+    struct arena * sa = ctx->scratch_arena;
+    const int     T_frames = 2 * F;
+    const int     hop      = 300;
+    const int64_t T_audio  = (int64_t)T_frames * hop;
+    const float   sr       = 24000.0f;
+    const float   two_pi   = 2.0f * (float)M_PI;
+    trace_rss("noise:entry");
+    struct tensor * f0_repeated = tensor_repeat_to(f0_proj, 2,
+                                                   9, T_frames, 1, 1);
+    struct tensor * harm_2d = tensor_reshape_2d(harmonics, 9, 1);
+    struct tensor * f0_per_frame = tensor_mul(f0_repeated, harm_2d);
+    struct tensor * step_nlc = tensor_scale(f0_per_frame, (float)hop / sr);
+    struct tensor * step_ncl = tensor_cont(tensor_transpose(step_nlc));
+    struct tensor * cs       = tensor_cumsum(step_ncl, 0);
+    struct tensor * ps_ncl   = tensor_sub(cs, step_ncl);
+    ps_ncl = tensor_scale(ps_ncl, two_pi);
+    struct tensor * phase_start_nlc = tensor_cont(tensor_transpose(ps_ncl));
+    trace_rss("noise:phase_start");
+    struct savept p_fpf = save(f0_per_frame);
+    struct savept p_ps  = save(phase_start_nlc);
+    struct savept p_f0  = save(f0_proj);
+    struct savept p_sr  = save(s_range);
+    struct savept p_sty = save(style_aco);
+    const float eps = eps_t->data[0];
+    const struct noise_hosts h = {
+        p_fpf.data, p_ps.data, p_f0.data, p_sr.data, T_frames
+    };
+    const int c16 = g_carry_fp16 >= 1;
+    float * singen_h = (float *)malloc((size_t)(9 * T_audio)
+                                       * sizeof(float));
+    assert(singen_h != NULL);
+    int64_t fa = 0;
+    while (fa < T_frames) {
+        int64_t fb = fa + (int64_t)NOISE_SEG_F;
+        if (fb > T_frames) { fb = T_frames; }
+        noise_singen_segment(ctx, &h, fa, fb, singen_h);
+        fa = fb;
+    }
+    arena_reset(sa);
+    struct tensor * sin_gen = tensor_wrap_2d(sa, singen_h, 9, T_audio);
+    struct tensor * l_lin_w = named_fmt(ctx, "l_lin.weight");
+    struct tensor * l_lin_b = named_fmt(ctx, "l_lin.bias");
+    struct tensor * mixed = tensor_add(
+        tensor_mul_mat(l_lin_w, sin_gen), l_lin_b);
+    struct tensor * excitation = tensor_tanh(mixed);
+    float * exc_h = (float *)malloc((size_t)T_audio * sizeof(float));
+    assert(exc_h != NULL);
+    memcpy(exc_h, excitation->data, (size_t)T_audio * sizeof(float));
+    free(singen_h);
+    trace_rss("noise:excitation");
+    const int64_t L1 = tensor_conv_out_len(T_audio, 20, 5, 10, 1);
+    void * stft_h = malloc((size_t)(22 * L1) * (c16 ? 2u : 4u));
+    assert(stft_h != NULL);
+    int64_t ua = 0;
+    while (ua < L1) {
+        int64_t ub = ua + (int64_t)NOISE_SEG_U;
+        if (ub > L1) { ub = L1; }
+        noise_stft_segment(ctx, exc_h, T_audio, ua, ub, eps, stft_h);
+        ua = ub;
+    }
+    free(exc_h);
+    trace_rss("noise:stft");
+    struct tensor * nc0_w = named_fmt(ctx, "nc0.weight");
+    struct tensor * nc1_w = named_fmt(ctx, "nc1.weight");
+    const int     C0 = (int)nc0_w->ne[2];
+    const int     C1 = (int)nc1_w->ne[2];
+    const int64_t L0 = tensor_conv_out_len(L1, (int)nc0_w->ne[0], 6, 3, 1);
+    float * nc0_h = host_alloc((size_t)(C0 * L0) * (c16 ? 2u : 4u));
+    noise_conv_blocks(ctx, stft_h, 22, L1, "nc0.weight", "nc0.bias",
+                      6, 3, nc0_h, C0, L0);
+    trace_rss("noise:nc0");
+    arena_reset(sa);
+    struct savept p_nc0 = savept_wrap(nc0_h, C0, L0, c16);
+    struct tensor * sty = restore(sa, &p_sty);
+    struct hifi_out nr0 = build_hifi_block(ctx, "nr0", &p_nc0, sty, 1);
+    trace_rss("noise:hifi-nr0");
+    float * nc1_h = host_alloc((size_t)(C1 * L1) * (c16 ? 2u : 4u));
+    noise_conv_blocks(ctx, stft_h, 22, L1, "nc1.weight", "nc1.bias",
+                      1, 0, nc1_h, C1, L1);
+    free(stft_h);
+    trace_rss("noise:nc1");
+    arena_reset(sa);
+    struct savept p_nc1 = savept_wrap(nc1_h, C1, L1, c16);
+    sty = restore(sa, &p_sty);
+    struct hifi_out nr1 = build_hifi_block(ctx, "nr1", &p_nc1, sty, 1);
+    trace_rss("noise:hifi-nr1");
+    savept_free(&p_fpf);
+    savept_free(&p_ps);
+    savept_free(&p_f0);
+    savept_free(&p_sr);
+    savept_free(&p_sty);
+    struct noise_outs r = { nr0, nr1 };
+    return r;
+}
+
+#else
 
 static struct noise_outs build_noise_contribs(struct kittens_ctx * ctx,
                                               struct tensor * f0_proj,
@@ -1496,19 +1591,16 @@ static struct noise_outs build_noise_contribs(struct kittens_ctx * ctx,
     const float two_pi = 2.0f * (float)M_PI;
     (void)T_audio;
     trace_rss("noise:entry");
-    // f0_audio: nearest-neighbor upsample (1, 2F) -> (1, T_audio).
     struct tensor * f0_3d  = tensor_reshape_3d(f0_proj, 1, 1, T_frames);
     struct tensor * f0_audio_3d = tensor_repeat_to(f0_3d, 3,
                                                    1, hop, T_frames, 1);
     struct tensor * f0_audio = tensor_reshape_2d(f0_audio_3d, 1, T_audio);
     struct tensor * voiced = tensor_step(f0_audio);
     trace_rss("noise:f0+voiced");
-    // f0_per_frame[h, t] = f0_proj[t] * (h+1). Repeat (1, 2F) -> (9, 2F).
     struct tensor * f0_repeated = tensor_repeat_to(f0_proj, 2,
                                                    9, T_frames, 1, 1);
     struct tensor * harm_2d = tensor_reshape_2d(harmonics, 9, 1);
     struct tensor * f0_per_frame = tensor_mul(f0_repeated, harm_2d);
-    // step = f0_per_frame * (hop/sr); phase_start = (cumsum-step)*2π.
     struct tensor * step_nlc = tensor_scale(f0_per_frame, (float)hop / sr);
     struct tensor * step_ncl = tensor_cont(tensor_transpose(step_nlc));
     struct tensor * cs       = tensor_cumsum(step_ncl, 0);
@@ -1516,7 +1608,6 @@ static struct noise_outs build_noise_contribs(struct kittens_ctx * ctx,
     ps_ncl = tensor_scale(ps_ncl, two_pi);
     struct tensor * phase_start_nlc = tensor_cont(tensor_transpose(ps_ncl));
     trace_rss("noise:phase_start");
-    // phase_within[h, t, s] = f0_per_frame[h, t] * s * (2π/sr)
     struct tensor * fpf_3d = tensor_reshape_3d(f0_per_frame, 9, T_frames, 1);
     struct tensor * s_3d   = tensor_reshape_3d(s_range, 1, 1, hop);
     struct tensor * fpf_x  = tensor_repeat_to(fpf_3d, 3, 9, T_frames, hop, 1);
@@ -1530,7 +1621,7 @@ static struct noise_outs build_noise_contribs(struct kittens_ctx * ctx,
                                                    9, T_frames, hop, 1);
     struct tensor * phase = tensor_add(ps_expanded, within);
     trace_rss("noise:phase");
-    phase = tensor_permute(phase, 0, 2, 1, 3);     // (9, hop, 2F)
+    phase = tensor_permute(phase, 0, 2, 1, 3);
     phase = tensor_cont(phase);
     phase = tensor_reshape_2d(phase, 9, T_audio);
     trace_rss("noise:phase-perm");
@@ -1564,85 +1655,211 @@ static struct noise_outs build_noise_contribs(struct kittens_ctx * ctx,
     struct tensor * nc0 = conv1d_nlc(stft_out, nc0_w, nc0_b, 6, 3, 1);
     struct tensor * nc1 = conv1d_nlc(stft_out, nc1_w, nc1_b, 1, 0, 1);
     trace_rss("noise:nc0+nc1");
-    // build_hifi_block now does save+arena_reset at entry, so we only
-    // need to preserve what we need AFTER its first call: nc1 (input
-    // to second hifi block) and style_aco (input to both). nc0 is
-    // saved by build_hifi_block itself.
-    struct savept p_nc1 = save(nc1);
+    struct savept p_nc0 = save16(nc0);
+    struct savept p_nc1 = save16(nc1);
     struct savept p_sty = save(style_aco);
-    struct tensor * nr0 = build_hifi_block(ctx, "nr0", nc0, style_aco);
+    struct hifi_out nr0 = build_hifi_block(ctx, "nr0", &p_nc0, style_aco, 1);
     trace_rss("noise:hifi-nr0");
-    struct savept p_nr0 = save(nr0);
-    nc1       = restore(sa, &p_nc1);
     style_aco = restore(sa, &p_sty);
-    struct tensor * nr1 = build_hifi_block(ctx, "nr1", nc1, style_aco);
+    struct hifi_out nr1 = build_hifi_block(ctx, "nr1", &p_nc1, style_aco, 1);
     trace_rss("noise:hifi-nr1");
-    nr0 = restore(sa, &p_nr0);
-    savept_free(&p_nc1);
     savept_free(&p_sty);
-    savept_free(&p_nr0);
     struct noise_outs r = { nr0, nr1 };
     return r;
 }
 
-// ---------------------------------------------------------------------------
-// Generator (HiFi-GAN-style upsamplers + ResBlocks + iSTFT head)
-// ---------------------------------------------------------------------------
+#endif
+
+#ifndef ISTFT_NO_SEG
+
+#define ISTFT_SEG_L 4096
+
+struct istft_stream {
+    const float * r2;
+    const float * r3;
+    int           C;
+    int64_t       L;
+    int           fp16;
+};
+
+static struct tensor * istft_mix_segment(struct arena * sa,
+                                         const struct istft_stream * s,
+                                         int64_t lo, int64_t hi) {
+    struct tensor * seg = tensor_new_2d(sa, s->C, hi - lo);
+    const size_t n   = (size_t)(hi - lo) * (size_t)s->C;
+    const size_t off = (size_t)lo * (size_t)s->C;
+    float * dst = seg->data;
+    if (s->fp16) {
+        const _Float16 * r2 = (const _Float16 *)s->r2 + off;
+        const _Float16 * r3 = (const _Float16 *)s->r3 + off;
+        for (size_t i = 0; i < n; i++) {
+            const float v = 0.5f * ((float)r2[i] + (float)r3[i]);
+            const float w = 0.1f * v;
+            dst[i] = v > w ? v : w;
+        }
+    } else {
+        const float * r2 = s->r2 + off;
+        const float * r3 = s->r3 + off;
+        for (size_t i = 0; i < n; i++) {
+            const float v = 0.5f * (r2[i] + r3[i]);
+            const float w = 0.1f * v;
+            dst[i] = v > w ? v : w;
+        }
+    }
+    return seg;
+}
+
+struct istft_spectra { struct tensor * re; struct tensor * im; };
+
+static struct istft_spectra istft_segment_spectra(struct tensor * seg,
+                                                  struct tensor * cp_w,
+                                                  struct tensor * cp_b) {
+    struct tensor * y = conv1d_nlc(seg, cp_w, cp_b, 1, -1, 1);
+    const int64_t W = y->ne[1];
+    struct tensor * mag_log = tensor_cont(
+        tensor_view_2d(y, 11, W, (size_t)y->nb[1], 0));
+    struct tensor * phase = tensor_cont(
+        tensor_view_2d(y, 11, W, (size_t)y->nb[1], (size_t)(11 * y->nb[0])));
+    struct tensor * mag   = tensor_exp(mag_log);
+    struct tensor * inner = tensor_sin(phase);
+    struct istft_spectra r;
+    r.re = tensor_mul(mag, tensor_cos(inner));
+    r.im = tensor_mul(mag, tensor_sin(inner));
+    return r;
+}
+
+static struct tensor * istft_frame_window(struct tensor * spec,
+                                          int64_t lo, int64_t wf,
+                                          int64_t b) {
+    return tensor_cont(tensor_view_2d(spec, 11, b - wf,
+                                      (size_t)spec->nb[1],
+                                      (size_t)((wf - lo) * spec->nb[1])));
+}
+
+static struct tensor * build_istft_tail(struct kittens_ctx * ctx,
+                                        struct hifi_out * r2,
+                                        struct hifi_out * r3) {
+    struct arena * sa = ctx->scratch_arena;
+    struct tensor * cp_w = named_fmt(ctx, "gen.cp.weight");
+    struct tensor * cp_b = named_fmt(ctx, "gen.cp.bias");
+    struct tensor * sb_r = named_fmt(ctx, "stft_bwd.real");
+    struct tensor * sb_i = named_fmt(ctx, "stft_bwd.imag");
+    const int     pad_cp = ((int)cp_w->ne[0] - 1) / 2;
+    const int     Kb     = (int)sb_r->ne[0];
+    const int     fr_ov  = (Kb + 3) / 5;
+    assert(r2->fp16 == r3->fp16);
+    const struct istft_stream s = {
+        r2->data, r3->data, r2->C, r2->L, r2->fp16
+    };
+    const size_t row = (size_t)s.C * (s.fp16 ? 2u : 4u);
+    size_t r2_retired = 0;
+    size_t r3_retired = 0;
+    const int64_t Tfull = (s.L - 1) * 5 + Kb;
+    float * audio_h = (float *)malloc((size_t)Tfull * sizeof(float));
+    assert(audio_h != NULL);
+    int64_t a = 0;
+    while (a < s.L) {
+        int64_t b = a + (int64_t)ISTFT_SEG_L;
+        if (b > s.L) { b = s.L; }
+        int64_t lo = a - (int64_t)(fr_ov + pad_cp);
+        if (lo < 0) { lo = 0; }
+        int64_t hi = b + (int64_t)pad_cp;
+        if (hi > s.L) { hi = s.L; }
+        int64_t wf = a - (int64_t)fr_ov;
+        if (wf < 0) { wf = 0; }
+        host_retire_prefix(r2->data, &r2_retired, (size_t)lo * row);
+        host_retire_prefix(r3->data, &r3_retired, (size_t)lo * row);
+        arena_reset(sa);
+        struct tensor * seg = istft_mix_segment(sa, &s, lo, hi);
+        struct istft_spectra sp = istft_segment_spectra(seg, cp_w, cp_b);
+        struct tensor * re_w = istft_frame_window(sp.re, lo, wf, b);
+        struct tensor * im_w = istft_frame_window(sp.im, lo, wf, b);
+        struct tensor * ar = conv_transpose_1d_nlc(re_w, sb_r, NULL, 5, 0);
+        struct tensor * ai = conv_transpose_1d_nlc(im_w, sb_i, NULL, 5, 0);
+        struct tensor * chunk = tensor_sub(ar, ai);
+        const int64_t g0 = a * 5;
+        const int64_t g1 = (b == s.L) ? Tfull : b * 5;
+        memcpy(audio_h + g0, chunk->data + (a - wf) * 5,
+               (size_t)(g1 - g0) * sizeof(float));
+        a = b;
+    }
+    host_free_rest(r2->data, r2_retired, hifi_out_bytes(r2));
+    r2->data = NULL;
+    host_free_rest(r3->data, r3_retired, hifi_out_bytes(r3));
+    r3->data = NULL;
+    const int trim = ctx->arch.istft_trim;
+    assert(Tfull > 2 * trim);
+    arena_reset(sa);
+    struct tensor * out = tensor_new_1d(sa, Tfull - 2 * trim);
+    memcpy(out->data, audio_h + trim,
+           (size_t)(Tfull - 2 * trim) * sizeof(float));
+    free(audio_h);
+    return out;
+}
+
+#endif
+
+static struct tensor * hifi_materialize(struct arena * sa,
+                                        struct hifi_out * h) {
+    struct tensor * t = tensor_new_2d(sa, h->C, h->L);
+    carry_load(t->data, h->data, h->fp16, 0,
+               (size_t)h->C * (size_t)h->L);
+    host_free(h->data, hifi_out_bytes(h));
+    h->data = NULL;
+    return t;
+}
 
 static struct tensor * build_generator(struct kittens_ctx * ctx,
                                    struct tensor * dec_out,
-                                   struct tensor * nr0, struct tensor * nr1,
+                                   struct hifi_out * nr0,
+                                   struct hifi_out * nr1,
                                    struct tensor * style_aco) {
     struct tensor * u0_w = named_fmt(ctx, "gen.u0.weight");
     struct tensor * u0_b = named_fmt(ctx, "gen.u0.bias");
     struct tensor * u1_w = named_fmt(ctx, "gen.u1.weight");
     struct tensor * u1_b = named_fmt(ctx, "gen.u1.bias");
+    struct arena * sa = ctx->scratch_arena;
+    struct savept p_sty = save(style_aco);
+    struct tensor * x = tensor_leaky_relu(dec_out, 0.1f);
+    x = conv_transpose_1d_nlc(x, u0_w, u0_b, 10, 5);
+    x = tensor_add(x, hifi_materialize(sa, nr0));
+    struct savept px = save16(x);
+    struct hifi_out r0 = build_hifi_block(ctx, "gen.r0", &px, style_aco, 0);
+    struct tensor * sty = restore(sa, &p_sty);
+    struct hifi_out r1 = build_hifi_block(ctx, "gen.r1", &px, sty, 1);
+    arena_reset(sa);
+    x = tensor_add(hifi_materialize(sa, &r0), hifi_materialize(sa, &r1));
+    x = tensor_scale(x, 0.5f);
+    x = tensor_leaky_relu(x, 0.1f);
+    x = conv_transpose_1d_nlc(x, u1_w, u1_b, 6, 3);
+    px = save(x);
+    arena_reset(sa);
+    x = restore(sa, &px);
+    savept_free(&px);
+    x = reflection_pad_left(x, 1);
+    x = tensor_add(x, hifi_materialize(sa, nr1));
+    sty = restore(sa, &p_sty);
+    px = save16(x);
+    struct hifi_out r2 = build_hifi_block(ctx, "gen.r2", &px, sty, 0);
+    sty = restore(sa, &p_sty);
+    struct hifi_out r3 = build_hifi_block(ctx, "gen.r3", &px, sty, 1);
+    savept_free(&px);
+    savept_free(&p_sty);
+#ifndef ISTFT_NO_SEG
+    trace_rss("gen:istft-tail");
+    struct tensor * out = build_istft_tail(ctx, &r2, &r3);
+    trace_rss("gen:audio");
+    return out;
+#else
     struct tensor * cp_w = named_fmt(ctx, "gen.cp.weight");
     struct tensor * cp_b = named_fmt(ctx, "gen.cp.bias");
     struct tensor * sb_r = named_fmt(ctx, "stft_bwd.real");
     struct tensor * sb_i = named_fmt(ctx, "stft_bwd.imag");
-    struct arena * sa = ctx->scratch_arena;
-    // build_hifi_block resets the arena internally; every input the
-    // caller still needs after a hifi call must be snapshotted to host
-    // memory FIRST, then restored. Snapshot style_aco and nr1 once at
-    // entry - both are referenced multiple times after the first reset.
-    // nr0 is used before any reset and doesn't need saving.
-    struct savept p_sty = save(style_aco);
-    struct savept p_nr1 = save(nr1);
-    struct tensor * x = tensor_leaky_relu(dec_out, 0.1f);
-    x = conv_transpose_1d_nlc(x, u0_w, u0_b, 10, 5);
-    x = tensor_add(x, nr0);
-    struct savept px, pr;
-    px = save(x);
-    struct tensor * r0 = build_hifi_block(ctx, "gen.r0", x, style_aco);
-    pr = save(r0);
-    x         = restore(sa, &px);
-    style_aco = restore(sa, &p_sty);
-    struct tensor * r1 = build_hifi_block(ctx, "gen.r1", x, style_aco);
-    r0 = restore(sa, &pr);
-    x = tensor_scale(tensor_add(r0, r1), 0.5f);
+    arena_reset(sa);
+    x = tensor_add(hifi_materialize(sa, &r2), hifi_materialize(sa, &r3));
+    x = tensor_scale(x, 0.5f);
     x = tensor_leaky_relu(x, 0.1f);
-    savept_free(&px); savept_free(&pr);
-    x = conv_transpose_1d_nlc(x, u1_w, u1_b, 6, 3);
-    x = reflection_pad_left(x, 1);
-    nr1 = restore(sa, &p_nr1);
-    style_aco = restore(sa, &p_sty);
-    x = tensor_add(x, nr1);
-    px = save(x);
-    struct tensor * r2 = build_hifi_block(ctx, "gen.r2", x, style_aco);
-    pr = save(r2);
-    x         = restore(sa, &px);
-    style_aco = restore(sa, &p_sty);
-    struct tensor * r3 = build_hifi_block(ctx, "gen.r3", x, style_aco);
-    r2 = restore(sa, &pr);
-    x = tensor_scale(tensor_add(r2, r3), 0.5f);
-    x = tensor_leaky_relu(x, 0.1f);
-    savept_free(&px); savept_free(&pr);
-    savept_free(&p_nr1);
-    savept_free(&p_sty);
     x = conv1d_nlc(x, cp_w, cp_b, 1, -1, 1);
-    // iSTFT head: mag = exp(x[0:11, :]); inner = sin(x[11:22, :]);
-    // real-and-imag conv-transposes; audio = audio_r - audio_i; trim.
     const int64_t L = x->ne[1];
     struct tensor * mag_log = tensor_view_2d(x, 11, L, (size_t)x->nb[1], 0);
     struct tensor * phase   = tensor_view_2d(x, 11, L,
@@ -1656,17 +1873,14 @@ static struct tensor * build_generator(struct kittens_ctx * ctx,
     struct tensor * im = tensor_mul(mag, tensor_sin(inner));
     struct tensor * audio_r = conv_transpose_1d_nlc(re, sb_r, NULL, 5, 0);
     struct tensor * audio_i = conv_transpose_1d_nlc(im, sb_i, NULL, 5, 0);
-    struct tensor * audio = tensor_sub(audio_r, audio_i);    // (1, T_audio)
+    struct tensor * audio = tensor_sub(audio_r, audio_i);
     const int trim = ctx->arch.istft_trim;
     const int64_t T = audio->ne[1];
     assert(T > 2 * trim);
     return tensor_cont(tensor_view_1d(audio, T - 2 * trim,
                                       (size_t)trim * sizeof(float)));
+#endif
 }
-
-// ---------------------------------------------------------------------------
-// Fade helpers (host-side)
-// ---------------------------------------------------------------------------
 
 static void fade_in(float * x, int n, int fade) {
     if (fade > 0 && fade <= n) {
@@ -1687,10 +1901,6 @@ static void fade_out(float * x, int n, int fade) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Public kittens_synthesize: full pipeline with length regulation
-// ---------------------------------------------------------------------------
-
 struct kittens_audio kittens_synthesize(struct kittens_ctx * ctx,
                                         const int32_t * phonemes,
                                         int n_phonemes,
@@ -1706,31 +1916,16 @@ struct kittens_audio kittens_synthesize(struct kittens_ctx * ctx,
     const struct arch * A = &ctx->arch;
     struct arena * sa = ctx->scratch_arena;
     trace_rss("entry");
-    // CRITICAL: redirect ALL op outputs into the scratch arena.
-    // Without this, ops whose first input is a model weight (q_w,
-    // ffn_w, embedding tables, ...) allocate their output in
-    // weights_arena, which is never reset and grows by ~100-200 MB
-    // per synthesize call until the process is OOM-killed. See
-    // tensor.c::arena_set_active.
     arena_set_active(sa);
-    // Host buffers we hold across arena resets.
     int   * durs = NULL;
     float * prosody_h = NULL, * text_h = NULL, * dur_h = NULL;
     float * prosody_lr_h = NULL, * text_lr_h = NULL;
     float * f0p_h = NULL, * np_h = NULL, * dec_h = NULL;
     float * audio_buf = NULL;
-    // ---- Stage 1: TextStage ----
     arena_reset(sa);
     {
         int32_t * pos_ids  = (int32_t *)malloc(sizeof(int32_t) * L);
         int32_t * type_ids = (int32_t *)malloc(sizeof(int32_t) * L);
-        // Position embeddings only have max_pos rows. Long paragraphs
-        // (heavy with "…", "—", etc.) can phonemize past that ceiling;
-        // clamp to max_pos-1 so the model degrades gracefully rather
-        // than asserting in tensor_get_rows. Quality past max_pos drops
-        // (every later token shares the last position embedding) but
-        // playback continues. Swift-side chunking should prevent us
-        // from getting here in the first place.
         const int max_p = A->max_pos > 0 ? A->max_pos - 1 : 0;
         for (int i = 0; i < L; i++) {
             pos_ids[i]  = i <= max_p ? i : max_p;
@@ -1756,7 +1951,6 @@ struct kittens_audio kittens_synthesize(struct kittens_ctx * ctx,
         memcpy(dur_h,     ts.dur_sig->data,    sizeof(float) *  50 * L);
     }
     trace_rss("after-stage1");
-    // ---- Length regulation ----
     durs = (int *)malloc(sizeof(int) * L);
     F = 0;
     for (int i = 0; i < L; i++) {
@@ -1789,7 +1983,6 @@ struct kittens_audio kittens_synthesize(struct kittens_ctx * ctx,
     free(text_h);    text_h    = NULL;
     free(dur_h);     dur_h     = NULL;
     free(durs);      durs      = NULL;
-    // ---- Stage 2: GenFront ----
     arena_reset(sa);
     {
         struct tensor * prosody_lr = tensor_new_2d(sa, 256, F);
@@ -1811,7 +2004,6 @@ struct kittens_audio kittens_synthesize(struct kittens_ctx * ctx,
     }
     free(prosody_lr_h); prosody_lr_h = NULL;
     trace_rss("after-stage2");
-    // ---- Stage 3: Decoder ----
     arena_reset(sa);
     {
         struct tensor * text_lr = tensor_new_2d(sa, 128, F);
@@ -1830,15 +2022,7 @@ struct kittens_audio kittens_synthesize(struct kittens_ctx * ctx,
     free(text_lr_h); text_lr_h = NULL;
     free(np_h);      np_h      = NULL;
     trace_rss("after-stage3");
-    // ---- Stage 4a: Noise contributions ----
-    // Run noise_contribs to completion, copy nr0/nr1 to host buffers,
-    // then reset the arena so all the noise intermediates (sine
-    // generator, STFT, magnitude, phase, etc.) die before the
-    // generator's HiFi blocks start. Cuts peak by ~150-200 MB at
-    // long F.
-    float * nr0_h = NULL, * nr1_h = NULL;
-    int64_t nr0_ne[4] = {0,0,0,0}, nr1_ne[4] = {0,0,0,0};
-    int     nr0_nd = 0, nr1_nd = 0;
+    struct noise_outs nz = { { NULL, 0, 0, 0 }, { NULL, 0, 0, 0 } };
     arena_reset(sa);
     {
         struct tensor * f0_t  = tensor_new_2d(sa, 1,   2 * F);
@@ -1851,24 +2035,11 @@ struct kittens_audio kittens_synthesize(struct kittens_ctx * ctx,
         for (int i = 0; i < 9;   i++) { harm->data[i]  = (float)(i + 1); }
         for (int i = 0; i < 300; i++) { s_rng->data[i] = (float)i; }
         eps_t->data[0] = 1e-9f;
-        struct noise_outs nz = build_noise_contribs(ctx, f0_t, sty_a,
-                                                    harm, s_rng,
-                                                    eps_t, F);
-        nr0_nd = nz.nr0->ndim;
-        nr1_nd = nz.nr1->ndim;
-        for (int i = 0; i < 4; i++) {
-            nr0_ne[i] = nz.nr0->ne[i];
-            nr1_ne[i] = nz.nr1->ne[i];
-        }
-        int64_t nr0_n = nr0_ne[0]*nr0_ne[1]*nr0_ne[2]*nr0_ne[3];
-        int64_t nr1_n = nr1_ne[0]*nr1_ne[1]*nr1_ne[2]*nr1_ne[3];
-        nr0_h = (float *)malloc((size_t)nr0_n * sizeof(float));
-        nr1_h = (float *)malloc((size_t)nr1_n * sizeof(float));
-        memcpy(nr0_h, nz.nr0->data, (size_t)nr0_n * sizeof(float));
-        memcpy(nr1_h, nz.nr1->data, (size_t)nr1_n * sizeof(float));
+        nz = build_noise_contribs(ctx, f0_t, sty_a, harm, s_rng,
+                                  eps_t, F);
     }
+    free(f0p_h); f0p_h = NULL;
     trace_rss("after-stage4a");
-    // ---- Stage 4b: Generator + iSTFT ----
     int n = 0;
     arena_reset(sa);
     {
@@ -1876,19 +2047,11 @@ struct kittens_audio kittens_synthesize(struct kittens_ctx * ctx,
         struct tensor * sty_a = tensor_new_1d(sa, 128);
         memcpy(dec_t->data, dec_h,     sizeof(float) * 256 * 2 * F);
         memcpy(sty_a->data, style256,  sizeof(float) * 128);
-        // Recreate nr0 / nr1 as tensors in the (now-fresh) arena.
-        struct tensor * nr0 = tensor_new_nd(sa, nr0_nd, nr0_ne);
-        struct tensor * nr1 = tensor_new_nd(sa, nr1_nd, nr1_ne);
-        size_t nr0_n = (size_t)(nr0_ne[0] * nr0_ne[1]
-                              * nr0_ne[2] * nr0_ne[3]);
-        size_t nr1_n = (size_t)(nr1_ne[0] * nr1_ne[1]
-                              * nr1_ne[2] * nr1_ne[3]);
-        memcpy(nr0->data, nr0_h, nr0_n * sizeof(float));
-        memcpy(nr1->data, nr1_h, nr1_n * sizeof(float));
-        struct tensor * audio_t = build_generator(ctx, dec_t, nr0, nr1,
+        free(dec_h); dec_h = NULL;
+        struct tensor * audio_t = build_generator(ctx, dec_t,
+                                                  &nz.nr0, &nz.nr1,
                                                   sty_a);
         const int T_audio = (int)audio_t->ne[0];
-        // Tail-drop 3 frames × 600 samples.
         n = T_audio;
         const int tail_drop = 3 * 600;
         if (n > tail_drop) { n -= tail_drop; }
@@ -1896,34 +2059,21 @@ struct kittens_audio kittens_synthesize(struct kittens_ctx * ctx,
         memcpy(audio_buf, audio_t->data, sizeof(float) * (size_t)n);
     }
     trace_rss("after-stage4b");
-    free(nr0_h); free(nr1_h);
-    free(f0p_h); f0p_h = NULL;
-    free(dec_h); dec_h = NULL;
-    // Fade in 3 ms, fade out 40 ms.
     fade_in (audio_buf, n,  72);
     fade_out(audio_buf, n, 960);
     out.samples   = audio_buf;
     out.n_samples = (uint64_t)n;
     arena_set_active(NULL);
-    // Release the per-call peak. Without this, the doubling slab chain
-    // (1+2+4+...+512+1024 MB for a long-sentence stage-4 peak) stays
-    // resident until the next synthesize call's stage-1 reset - which
-    // the OS reports as ~2-3 GB of RSS between sentences.
     arena_reset(sa);
     return out;
 }
-
-// ---------------------------------------------------------------------------
-// Smoke test (compile as standalone with -DKITTENS_TESTS). Folded in
-// to match the single-file-library + bottom-of-file smoke convention.
-// ---------------------------------------------------------------------------
 
 #ifdef KITTENS_TESTS
 
 int main(int argc, char ** argv) {
     const char * path = argc > 1
         ? argv[1]
-        : "app/Resources/nano/kitten_full.gguf";
+        : "Resources/nano/kitten_full.gguf";
     struct kittens_ctx * ctx = kittens_create(path);
     int rc = 1;
     if (ctx == NULL) {
@@ -1948,6 +2098,6 @@ int main(int argc, char ** argv) {
     return rc;
 }
 
-#endif /* KITTENS_TESTS */
+#endif
 
-#endif /* KITTENS_C */
+#endif

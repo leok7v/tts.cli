@@ -34,7 +34,7 @@
 #include <ctype.h>
 #include <unistd.h>
 
-#include "kittens.h"
+#include "tts/kittens.h"
 #include "kitten_symbols.h"
 
 // ---- phonemizer surface (implemented in src/phonemizer.c) ----------

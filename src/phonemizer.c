@@ -9,7 +9,7 @@
 // inlined at the top of this TU; no #include of maps.c / chars.c
 // / arrays.c. The Swift bridge reaches phonemizer_create /
 // _destroy / _phonemize / _free_string / _get_error via the
-// declarations in app/bridge.h, the only consumer.
+// declarations in bridge.h, the only consumer.
 
 #ifndef PHONEMIZER_C
 #define PHONEMIZER_C
@@ -10756,8 +10756,8 @@ static void test_apply_rules_end_to_end(void) {
 
 static void test_word_to_phonemes_real(void) {
     // Real dict + rules from the bundled nano model.
-    const char * list_path = "../app/Resources/nano/en_list";
-    const char * rules_path = "../app/Resources/nano/en_rules";
+    const char * list_path = "../Resources/nano/en_list";
+    const char * rules_path = "../Resources/nano/en_rules";
     struct phonemizer p = {0};
     phonemizer_state_init(&p);
     chars_puts(&p.dialect, "en-us");
@@ -10946,8 +10946,8 @@ static void test_prosody_steps(void) {
 }
 
 static void test_public_api_end_to_end(void) {
-    const char * list_path = "../app/Resources/nano/en_list";
-    const char * rules_path = "../app/Resources/nano/en_rules";
+    const char * list_path = "../Resources/nano/en_list";
+    const char * rules_path = "../Resources/nano/en_rules";
     PhonemizerHandle h = phonemizer_create(rules_path, list_path,
                                            "en-us");
     assert(h != NULL);

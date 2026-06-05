@@ -80,11 +80,22 @@ number-heavy text, expand to words in your input.
 
 ## Layout
 
+Engine sources are synced verbatim from the
+[kittens.cpu](https://github.com/leok7v/kittens.cpu) upstream
+(`tts/src`, `tts/include`, `gguf/`, `src/trace` there).
+
 ```
 kittens_tts_cli.c        single-file CLI driver (#ifdef KITTENS_TTS_CLI_MAIN)
-src/kittens.c            synth core (transitively #includes gguf.c + tensor.c)
+src/kittens.c            synth core (transitively #includes tensor.c +
+                         gguf_reader.c; time-segmented HiFi-GAN / iSTFT /
+                         noise stages keep peak RSS bounded)
+src/tensor.c             fp32 tensor lib + arena allocator
+src/gguf_reader.c        shared GGUF v3 reader
+src/trace.c              leveled trace ring (stderr mirror)
 src/phonemizer.c         text -> IPA (C99 port)
 src/kitten_symbols.h     IPA code-point -> phoneme-id table (generated)
+include/tts/kittens.h    public C API
+include/trace/trace.h    trace ring API
 resources/               kitten_full.gguf, voices.safetensors, en_rules, en_list
 ```
 

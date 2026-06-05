@@ -13,13 +13,13 @@ BIN      := kittens-tts-cli
 SRC      := src
 WARN     := -Wall -Wextra -Wno-unused-parameter -Wno-unused-function
 OPT      := -O2
-INC      := -I$(SRC)
+INC      := -I$(SRC) -Iinclude
 LDFLAGS  := -framework Accelerate -lm
 
 RES := resources/kitten_full.gguf resources/voices.safetensors \
        resources/en_rules resources/en_list
 
-OBJS := build/driver.o build/kittens.o build/phonemizer.o
+OBJS := build/driver.o build/kittens.o build/phonemizer.o build/trace.o
 
 $(BIN): $(OBJS)
 	$(CC) $(OBJS) $(LDFLAGS) -o $@
@@ -30,13 +30,17 @@ build/driver.o: kittens_tts_cli.c $(SRC)/kitten_symbols.h $(RES) | build
 	$(CC) -std=c23 $(OPT) $(WARN) $(INC) -DKITTENS_TTS_CLI_MAIN \
 	      -c kittens_tts_cli.c -o $@
 
-# kittens.c transitively #includes gguf.c + tensor.c (guarded single-
-# file libraries), so this one TU covers the whole synth core.
-build/kittens.o: $(SRC)/kittens.c | build
+# kittens.c transitively #includes tensor.c + gguf_reader.c (guarded
+# single-file libraries), so this one TU covers the whole synth core.
+build/kittens.o: $(SRC)/kittens.c $(SRC)/tensor.c $(SRC)/gguf_reader.c \
+                 include/tts/kittens.h include/trace/trace.h | build
 	$(CC) -std=gnu17 $(OPT) $(WARN) $(INC) -c $(SRC)/kittens.c -o $@
 
 build/phonemizer.o: $(SRC)/phonemizer.c | build
 	$(CC) -std=gnu17 $(OPT) $(WARN) $(INC) -c $(SRC)/phonemizer.c -o $@
+
+build/trace.o: $(SRC)/trace.c include/trace/trace.h | build
+	$(CC) -std=gnu17 $(OPT) $(WARN) $(INC) -c $(SRC)/trace.c -o $@
 
 build:
 	@mkdir -p build

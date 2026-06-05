@@ -1,50 +1,6 @@
-// tensor.c -- minimal CPU-only fp32 tensor library for kittens-tts.
-//
-// Designed as a drop-in replacement for the subset of ggml that
-// kittens-tts uses (73 distinct ggml_* symbols, of which ~30 are real
-// ops; the rest is graph/backend plumbing that vanishes under eager
-// evaluation).
-//
-// Conventions
-// -----------
-//   - Single dtype: float32. The kitten-tts model is fp32 end-to-end;
-//     quantization is a separate concern for a v2 of this library.
-//   - Shape stored in ne[4], ne[0] is the FASTEST-VARYING axis
-//     (matches ggml; reverses PyTorch). For NCL activations:
-//     ne[0]=L, ne[1]=C, ne[2]=N (=1), ne[3]=1.
-//   - Strides stored in nb[4] in BYTES. nb[0] == sizeof(float) when
-//     packed.
-//   - Tensors are arena-allocated. The arena owns both the tensor
-//     header structs and their data slabs. A weights arena lives for
-//     the model's lifetime; a scratch arena is reset at the top of
-//     every kittens_synthesize call.
-//   - All ops are EAGER: each call computes immediately and returns a
-//     fresh tensor owned by the same arena as its first input. No
-//     graph builder, no two-phase compute.
-//   - Broadcasting is restricted to the three cases kittens-tts uses:
-//     scalar (1-element tensor) | channel-vector (length C along
-//     ne[1]) | matching shape. Anything else trips an assert.
-//
-// Build
-// -----
-//   On Apple: link with -framework Accelerate, define
-//     ACCELERATE_NEW_LAPACK to silence the macOS 13.3+ deprecation
-//     warning on the legacy ILP32 cblas symbols.
-//   On Linux/Windows: link with -lopenblas (or any cblas-providing
-//     BLAS) and -lm.
-//
-// Wrapped in a header guard so the only consumer (gguf.c, which is
-// itself included from kittens.c) pulls this whole file in via
-// `#include "tensor.c"` without producing a double-definition. See
-// node.c.dev for the single-file-library convention.
-
 #ifndef TENSOR_C
 #define TENSOR_C
 
-// Must be defined BEFORE any include that could transitively pull in
-// Accelerate's cblas headers - otherwise the legacy LP64 cblas_sgemm
-// declarations (deprecated in macOS 13.3) are picked up and the
-// compiler issues deprecation warnings on every BLAS call site.
 #if defined(__APPLE__) && !defined(ACCELERATE_NEW_LAPACK)
     #define ACCELERATE_NEW_LAPACK
 #endif
@@ -63,26 +19,19 @@
     #include <cblas.h>
 #endif
 
-
-// ---------------------------------------------------------------------------
-// Public surface (was cpu/include/kt_tensor.h; folded in to keep tensor
-// a single-file library that consumers pull via `#include "tensor.c"`).
-// ---------------------------------------------------------------------------
-
 #define TENSOR_MAX_DIMS 4
 
 struct arena;
 
 struct tensor {
-    int64_t        ne[TENSOR_MAX_DIMS]; // logical extents, ne[0] inner
-    int64_t        nb[TENSOR_MAX_DIMS]; // byte strides
-    int            ndim;                // 1..4
-    float *        data;                // 64-byte aligned, arena-owned
-    struct arena * arena;               // for output allocation
-    char           name[32];            // debug only; "" if unnamed
+    int64_t        ne[TENSOR_MAX_DIMS];
+    int64_t        nb[TENSOR_MAX_DIMS];
+    int            ndim;
+    float *        data;
+    struct arena * arena;
+    char           name[32];
 };
 
-// Arena lifecycle
 struct arena * arena_new(size_t initial_bytes);
 void           arena_free(struct arena * a);
 void           arena_reset(struct arena * a);
@@ -91,7 +40,6 @@ size_t         arena_capacity(const struct arena * a);
 void           arena_set_active(struct arena * a);
 struct arena * arena_get_active(void);
 
-// Tensor creation
 struct tensor * tensor_new_1d(struct arena * a, int64_t n0);
 struct tensor * tensor_new_2d(struct arena * a, int64_t n0, int64_t n1);
 struct tensor * tensor_new_3d(struct arena * a,
@@ -115,7 +63,6 @@ struct tensor * tensor_wrap_nd(struct arena * a, int ndim,
                                const int64_t ne[TENSOR_MAX_DIMS]);
 void tensor_set_name(struct tensor * t, const char * name);
 
-// Layout ops. `offset` is a byte offset into src->data.
 struct tensor * tensor_view_1d(struct tensor * t, int64_t n0, size_t offset);
 struct tensor * tensor_view_2d(struct tensor * t, int64_t n0, int64_t n1,
                                size_t nb1, size_t offset);
@@ -144,7 +91,6 @@ void tensor_cpy(const struct tensor * src, struct tensor * dst);
 struct tensor * tensor_get_rows(struct tensor * data,
                                 const int32_t * ids, int n_ids);
 
-// Elementwise
 struct tensor * tensor_add(struct tensor * x, struct tensor * y);
 struct tensor * tensor_sub(struct tensor * x, struct tensor * y);
 struct tensor * tensor_mul(struct tensor * x, struct tensor * y);
@@ -161,24 +107,19 @@ struct tensor * tensor_exp(struct tensor * x);
 struct tensor * tensor_sqrt(struct tensor * x);
 struct tensor * tensor_atan2(struct tensor * y, struct tensor * x);
 
-// Reductions / norm
 struct tensor * tensor_norm(struct tensor * x, int axis, float eps);
 struct tensor * tensor_softmax(struct tensor * x, int axis,
                                float scale);
 struct tensor * tensor_cumsum(struct tensor * x, int axis);
 
-// Linear algebra
 struct tensor * tensor_mul_mat(struct tensor * w, struct tensor * x);
 void tensor_set_sgemm_impl(int impl);
 int  tensor_get_sgemm_impl(void);
 
-// Memory diagnostics — phys_footprint is the field iOS jetsam reads.
-// Peak is high-water-mark sampled at every arena_pages_alloc (mmap).
 uint64_t tensor_current_phys_footprint(void);
 uint64_t tensor_peak_phys_footprint(void);
 void     tensor_reset_peak_phys_footprint(void);
 
-// Conv1d family
 struct tensor * tensor_conv_1d(struct tensor * w, struct tensor * x,
                                int stride, int pad, int dilation);
 struct tensor * tensor_conv_1d_dw(struct tensor * w, struct tensor * x,
@@ -190,30 +131,11 @@ struct tensor * tensor_im2col(struct tensor * x,
                               int kernel, int stride, int pad,
                               int dilation);
 
-// Shape inspection
 int64_t tensor_nelements(const struct tensor * t);
 size_t  tensor_nbytes(const struct tensor * t);
 bool    tensor_is_packed(const struct tensor * t);
 bool    tensor_same_shape(const struct tensor * a,
                           const struct tensor * b);
-
-
-// ---------------------------------------------------------------------------
-// Platform: aligned alloc (slab pages)
-// ---------------------------------------------------------------------------
-//
-// Slabs are allocated via mmap directly (not posix_memalign / free) so
-// that munmap returns the pages to the kernel IMMEDIATELY. macOS's
-// libsystem_malloc caches medium/large allocations on a private free
-// list, which means `posix_memalign(N) ... free()` looks like a leak
-// to the OS RSS counter even after we've correctly freed it. A single
-// long-sentence stage-4 peak (hundreds of MB of scratch slabs) would
-// show up as multi-GB resident memory until process exit.
-//
-// mmap is page-aligned (16 KB on Apple Silicon); we round the request
-// up to a page boundary and store the rounded size alongside the slab
-// so munmap can pass the same length back. Linux/macOS both support
-// MAP_ANON for anonymous private pages.
 
 #include <sys/mman.h>
 #include <unistd.h>
@@ -229,13 +151,6 @@ static size_t arena_page_size(void) {
     return cached;
 }
 
-// Peak phys_footprint tracker. Sampled at every arena_pages_alloc
-// (mmap) — the only call that grows the process's virtual commit on
-// our hot path. Updates a high-water-mark counter so callers see the
-// peak that happened DURING a synthesize call, not just whatever
-// task_info would return after arena_reset has freed the slabs.
-// Read via tensor_peak_phys_footprint(); reset to current via
-// tensor_reset_peak_phys_footprint().
 #if defined(__APPLE__)
 #include <mach/mach.h>
 static uint64_t g_peak_phys_footprint = 0;
@@ -273,9 +188,6 @@ static void * arena_pages_alloc(size_t bytes, size_t * out_mapped) {
                          MAP_ANON | MAP_PRIVATE, -1, 0);
     if (result == MAP_FAILED) { result = NULL; rounded = 0; }
     *out_mapped = rounded;
-    // Sample immediately after the mmap. This is the moment
-    // phys_footprint can jump on the slab-growth path; sampling here
-    // catches the new high-water mark before anything else runs.
     tensor_sample_peak();
     return result;
 }
@@ -286,22 +198,17 @@ static void arena_pages_free(void * p, size_t mapped) {
     }
 }
 
-
-// ---------------------------------------------------------------------------
-// Arena: chained slabs, bump cursor inside each slab.
-// ---------------------------------------------------------------------------
-
 typedef struct arena_slab {
-    char *           data;       // page-aligned (mmap'd)
-    size_t           capacity;   // bytes the user asked for
-    size_t           mapped;     // bytes actually mmap'd (>= capacity)
+    char *           data;
+    size_t           capacity;
+    size_t           mapped;
     size_t           used;
     struct arena_slab * next;
 } arena_slab;
 
 struct arena {
-    arena_slab * head;              // active slab, has free space
-    arena_slab * first;             // never freed by reset
+    arena_slab * head;
+    arena_slab * first;
     size_t    initial_bytes;
 };
 
@@ -349,7 +256,6 @@ void arena_free(struct arena * a) {
 
 void arena_reset(struct arena * a) {
     assert(a != NULL);
-    // Drop every slab past the first; reset cursor of the first.
     arena_slab * s = a->first->next;
     while (s != NULL) {
         arena_slab * next = s->next;
@@ -383,28 +289,15 @@ size_t arena_capacity(const struct arena * a) {
     return total;
 }
 
-// "Active arena" target for allocating ops. See struct tensor.h.
 static struct arena * g_active_arena = NULL;
 
 void arena_set_active(struct arena * a) { g_active_arena = a; }
 struct arena * arena_get_active(void)   { return g_active_arena; }
 
-// Helper used at every op alloc site: route output to the active arena
-// when one is set, otherwise to the input's own arena. Critical for
-// avoiding leaks into weights_arena when ops compute on weight inputs.
 static inline struct arena * arena_aout(struct arena * fallback) {
     return g_active_arena != NULL ? g_active_arena : fallback;
 }
 
-// Carve `bytes` from the arena, 64-byte aligned. Grows on demand.
-//
-// Growth policy: allocate a new slab sized to fit just this request
-// (rounded up to a 1 MB minimum so follow-up small allocations
-// coalesce into the same slab). The previous "double the capacity"
-// policy nearly doubled peak memory — for a 600 MB peak need the slab
-// chain was 1+2+4+...+512 = 1023 MB, which OOM-killed the app on iOS
-// (jetsam at ~2 GB phys_footprint). Linear growth means peak slab
-// total is ~1x actual usage.
 static void * arena_alloc(struct arena * a, size_t bytes) {
     assert(a != NULL);
     size_t rounded = (bytes + (TENSOR_ALIGN - 1)) & ~((size_t)(TENSOR_ALIGN - 1));
@@ -412,7 +305,7 @@ static void * arena_alloc(struct arena * a, size_t bytes) {
     size_t aligned_used = (s->used + (TENSOR_ALIGN - 1))
                           & ~((size_t)(TENSOR_ALIGN - 1));
     if (aligned_used + rounded > s->capacity) {
-        const size_t MIN_NEW_SLAB = (size_t)1 << 20;   // 1 MB
+        const size_t MIN_NEW_SLAB = (size_t)1 << 20;
         size_t new_cap = rounded + TENSOR_ALIGN;
         if (new_cap < MIN_NEW_SLAB) { new_cap = MIN_NEW_SLAB; }
         arena_slab * ns = arena_slab_new(new_cap);
@@ -425,10 +318,6 @@ static void * arena_alloc(struct arena * a, size_t bytes) {
     s->used = aligned_used + rounded;
     return out;
 }
-
-// ---------------------------------------------------------------------------
-// Shape helpers
-// ---------------------------------------------------------------------------
 
 static void tensor_set_packed_strides(struct tensor * t) {
     t->nb[0] = sizeof(float);
@@ -469,11 +358,6 @@ bool tensor_same_shape(const struct tensor * a, const struct tensor * b) {
     }
     return same;
 }
-
-
-// ---------------------------------------------------------------------------
-// Tensor creation
-// ---------------------------------------------------------------------------
 
 static struct tensor * tensor_alloc_header(struct arena * a) {
     struct tensor * t = (struct tensor *)arena_alloc(a, sizeof(struct tensor));
@@ -583,12 +467,6 @@ void tensor_set_name(struct tensor * t, const char * name) {
     t->name[n] = '\0';
 }
 
-// ---------------------------------------------------------------------------
-// Layout ops
-// ---------------------------------------------------------------------------
-
-// Build a header sharing src's data buffer (view). src and out are
-// distinct here: src is the input we view into, out the new header.
 static struct tensor * tensor_make_view(struct tensor * src, int ndim,
                                         int64_t n0, int64_t n1,
                                         int64_t n2, int64_t n3,
@@ -684,7 +562,6 @@ struct tensor * tensor_transpose(struct tensor * src) {
     return tensor_permute(src, 1, 0, 2, 3);
 }
 
-// Copy a strided tensor into a fresh packed buffer.
 struct tensor * tensor_cont(struct tensor * src) {
     struct tensor * t = tensor_alloc_with_data(arena_aout(src->arena),
                                        src->ndim,
@@ -749,8 +626,6 @@ void tensor_cpy(const struct tensor * src, struct tensor * dst) {
     }
 }
 
-// Concat along axis. Both inputs must agree on all other axes and be
-// packed (for v1; strided concat is harder and not needed yet).
 struct tensor * tensor_concat(struct tensor * a, struct tensor * b, int axis) {
     assert(axis >= 0 && axis < TENSOR_MAX_DIMS);
     assert(a->ndim == b->ndim);
@@ -765,8 +640,6 @@ struct tensor * tensor_concat(struct tensor * a, struct tensor * b, int axis) {
     struct tensor * t = tensor_alloc_with_data(arena_aout(a->arena), a->ndim,
                                        out_ne[0], out_ne[1],
                                        out_ne[2], out_ne[3]);
-    // Iterate over the "outer" axes (> axis), then within each slab
-    // copy A's row then B's row along `axis`.
     int64_t outer = 1;
     for (int i = axis + 1; i < TENSOR_MAX_DIMS; i++) { outer *= a->ne[i]; }
     int64_t inner = 1;
@@ -785,9 +658,6 @@ struct tensor * tensor_concat(struct tensor * a, struct tensor * b, int axis) {
     return t;
 }
 
-// Same as tensor_repeat but takes the target shape as ints. Avoids the
-// caller having to materialize a full template tensor (which would
-// allocate the full output buffer just to be ignored).
 struct tensor * tensor_repeat_to(struct tensor * src, int ndim,
                          int64_t n0, int64_t n1,
                          int64_t n2, int64_t n3) {
@@ -799,8 +669,6 @@ struct tensor * tensor_repeat_to(struct tensor * src, int ndim,
     return tensor_repeat(src, &template);
 }
 
-// repeat: tile src to match shape_like. Each src axis must be 1 or
-// equal to shape_like's. (For v1: trivial broadcast tiling.)
 struct tensor * tensor_repeat(struct tensor * src,
                               const struct tensor * shape_like) {
     for (int i = 0; i < TENSOR_MAX_DIMS; i++) {
@@ -851,14 +719,6 @@ struct tensor * tensor_get_rows(struct tensor * data,
     return t;
 }
 
-// ---------------------------------------------------------------------------
-// Broadcasting kernels (ggml-style: y.ne[i] must be 1 or equal to x.ne[i]).
-// ---------------------------------------------------------------------------
-
-// `y` is broadcastable against `x` iff for every axis i, y.ne[i] is 1
-// (broadcast along that axis) or y.ne[i] equals x.ne[i]. The loop's
-// final `i` value IS the post-condition: i == TENSOR_MAX_DIMS iff every
-// axis was compatible.
 static int tensor_broadcastable(const struct tensor * x,
                                 const struct tensor * y) {
     int i = 0;
@@ -873,22 +733,17 @@ enum tensor_bin {
     TENSOR_BIN_ADD, TENSOR_BIN_SUB, TENSOR_BIN_MUL, TENSOR_BIN_DIV
 };
 
-// Vector-vector for two contiguous buffers via vDSP (Apple's hand-tuned
-// SIMD kernels — fast even at -O0 because the work is in libBLAS).
 static void tensor_vec_vv(enum tensor_bin op, const float * x, const float * y,
                       float * out, int64_t n) {
     const vDSP_Length N = (vDSP_Length)n;
     switch (op) {
         case TENSOR_BIN_ADD: vDSP_vadd(x, 1, y, 1, out, 1, N); break;
-        // vDSP_vsub computes A - B with arg order (B, IB, A, IA, ...).
         case TENSOR_BIN_SUB: vDSP_vsub(y, 1, x, 1, out, 1, N); break;
         case TENSOR_BIN_MUL: vDSP_vmul(x, 1, y, 1, out, 1, N); break;
-        // vDSP_vdiv computes A / B with arg order (B, IB, A, IA, ...).
         case TENSOR_BIN_DIV: vDSP_vdiv(y, 1, x, 1, out, 1, N); break;
     }
 }
 
-// Vector-scalar (y is broadcast as a single value) via vDSP.
 static void tensor_vec_vs(enum tensor_bin op, const float * x, float s,
                       float * out, int64_t n) {
     const vDSP_Length N = (vDSP_Length)n;
@@ -903,8 +758,6 @@ static void tensor_vec_vs(enum tensor_bin op, const float * x, float s,
     }
 }
 
-// Scalar fallback for the strided / broadcast path. Switch dispatch
-// (no function pointer) so -O0 doesn't pay a call per element.
 static inline float tensor_scalar_op(enum tensor_bin op, float a, float b) {
     switch (op) {
         case TENSOR_BIN_ADD: return a + b;
@@ -927,11 +780,9 @@ static struct tensor * tensor_apply_binop(struct tensor * x, struct tensor * y,
     const float * yb = y->data;
     float * ob = out->data;
     int64_t total = tensor_nelements(x);
-    // Fast path 1: identical packed shape -> vDSP vector-vector kernel.
     if (tensor_same_shape(x, y) && tensor_is_packed(x) && tensor_is_packed(y)) {
         tensor_vec_vv(op, xb, yb, ob, total);
     } else if (tensor_nelements(y) == 1) {
-        // Fast path 2: y is scalar -> vDSP vector-scalar kernel.
         if (tensor_is_packed(x)) {
             tensor_vec_vs(op, xb, yb[0], ob, total);
         } else {
@@ -953,10 +804,6 @@ static struct tensor * tensor_apply_binop(struct tensor * x, struct tensor * y,
             }
         }
     } else {
-        // Fast path 3: general broadcast where both x and y are packed
-        // along ne[0] (the inner axis). For each row, dispatch the
-        // inner kernel through vDSP — vector-vector when y.ne[0] equals
-        // x.ne[0], vector-scalar when y broadcasts along ne[0].
         const int64_t ys0 = (y->ne[0] == 1) ? 0 : y->nb[0];
         const int64_t ys1 = (y->ne[1] == 1) ? 0 : y->nb[1];
         const int64_t ys2 = (y->ne[2] == 1) ? 0 : y->nb[2];
@@ -1016,19 +863,12 @@ struct tensor * tensor_div(struct tensor * x, struct tensor * y) {
     return tensor_apply_binop(x, y, TENSOR_BIN_DIV);
 }
 
-// ---------------------------------------------------------------------------
-// Elementwise unary
-// ---------------------------------------------------------------------------
-
 enum tensor_unop {
     TENSOR_U_SCALE, TENSOR_U_SIGMOID, TENSOR_U_TANH, TENSOR_U_LRELU,
     TENSOR_U_GELU,  TENSOR_U_STEP,    TENSOR_U_SIN,  TENSOR_U_COS,
     TENSOR_U_EXP,   TENSOR_U_SQRT
 };
 
-// Vector-only fast paths via vForce (transcendentals) and vDSP (linear
-// ops). These are SIMD ASM kernels in Accelerate, so they hit memory
-// bandwidth even when the calling code is built at -O0.
 static void tensor_vec_unary(enum tensor_unop op, const float * x, float * out,
                              int64_t n, float param) {
     int len = (int)n;
@@ -1040,10 +880,6 @@ static void tensor_vec_unary(enum tensor_unop op, const float * x, float * out,
         break;
     }
     case TENSOR_U_SIGMOID: {
-        // sigmoid(x) = 1 / (1 + exp(-x))
-        // Implemented as: out = -x; out = exp(out); out = 1+out;
-        // out = 1/out — three vForce/vDSP passes; still beats per-elem
-        // function calls at -O0.
         vDSP_vneg(x, 1, out, 1, N);
         vvexpf(out, out, &len);
         float one = 1.0f;
@@ -1053,18 +889,13 @@ static void tensor_vec_unary(enum tensor_unop op, const float * x, float * out,
     }
     case TENSOR_U_TANH: vvtanhf(out, x, &len); break;
     case TENSOR_U_LRELU: {
-        // leaky_relu(x, s) = max(x, x*s) when s in (0, 1).
-        // out = x*s, then out = max(x, x*s).
         vDSP_vsmul(x, 1, &param, out, 1, N);
         vDSP_vmax(x, 1, out, 1, out, 1, N);
         break;
     }
     case TENSOR_U_GELU: {
-        // 0.5 * x * (1 + erf(x / sqrt(2)))
         const float inv_sqrt2 = (float)M_SQRT1_2;
         vDSP_vsmul(x, 1, &inv_sqrt2, out, 1, N);
-        // No vForce vverf — fall back to scalar erff per element. Still
-        // a single pass.
         for (int64_t i = 0; i < n; i++) {
             float v = out[i];
             out[i] = 0.5f * x[i] * (1.0f + erff(v));
@@ -1081,8 +912,6 @@ static void tensor_vec_unary(enum tensor_unop op, const float * x, float * out,
     }
 }
 
-// Scalar fallback for the strided path. Switch dispatch (no function
-// pointer call per element).
 static inline float tensor_scalar_unary(enum tensor_unop op, float v, float p) {
     switch (op) {
     case TENSOR_U_SCALE:   return v * p;
@@ -1109,9 +938,6 @@ static struct tensor * tensor_apply_unary(struct tensor * x,
     if (tensor_is_packed(x)) {
         tensor_vec_unary(op, x->data, out->data, n, param);
     } else {
-        // Strided input: indexed walk. Per-row vector path would need
-        // packed inner stride; we can still handle that inline if it
-        // matters later.
         const int64_t n0 = x->ne[0], n1 = x->ne[1];
         const int64_t n2 = x->ne[2], n3 = x->ne[3];
         for (int64_t i3 = 0; i3 < n3; i3++) {
@@ -1187,15 +1013,7 @@ struct tensor * tensor_atan2(struct tensor * y, struct tensor * x) {
     return out;
 }
 
-// ---------------------------------------------------------------------------
-// Reductions / normalization
-// ---------------------------------------------------------------------------
-
-// Reduce along ne[axis], keepdim (write per-outer scalar into out).
-// LayerNorm: subtract mean, divide by sqrt(var + eps). No scale/bias.
 struct tensor * tensor_norm(struct tensor * x, int axis, float eps) {
-    // For kittens-tts the only axis we ever normalize over is the
-    // innermost (ne[0]) — matches ggml_norm semantics.
     assert(axis == 0);
     assert(tensor_is_packed(x));
     struct tensor * out = tensor_alloc_with_data(arena_aout(x->arena), x->ndim,
@@ -1209,15 +1027,12 @@ struct tensor * tensor_norm(struct tensor * x, int axis, float eps) {
     for (int64_t r = 0; r < outer; r++) {
         const float * row = xb + r * n0;
         float * orow = ob + r * n0;
-        // mean(x) and mean(x^2) via vDSP — single SIMD pass each.
         float mean = 0.0f;
         float meanSq = 0.0f;
         vDSP_meanv (row, 1, &mean,   N);
         vDSP_measqv(row, 1, &meanSq, N);
         const float var = meanSq - mean * mean;
         const float invstd = 1.0f / sqrtf(var + eps);
-        // out = (x - mean) * invstd  ==  x * invstd + (-mean * invstd)
-        // Encoded as a single fused multiply-add via vDSP_vsmsa.
         const float bias = -mean * invstd;
         vDSP_vsmsa((float *)row, 1, (float *)&invstd, (float *)&bias,
                    orow, 1, N);
@@ -1240,17 +1055,12 @@ struct tensor * tensor_softmax(struct tensor * x, int axis, float scale) {
     for (int64_t r = 0; r < outer; r++) {
         const float * row = xb + r * n0;
         float * orow = ob + r * n0;
-        // 1) orow = row * scale
         vDSP_vsmul(row, 1, (float *)&scale, orow, 1, N);
-        // 2) max(orow)
         float mx;
         vDSP_maxv(orow, 1, &mx, N);
-        // 3) orow -= mx
         float negmx = -mx;
         vDSP_vsadd(orow, 1, &negmx, orow, 1, N);
-        // 4) orow = exp(orow)
         vvexpf(orow, orow, &Nint);
-        // 5) sum and divide
         float sum;
         vDSP_sve(orow, 1, &sum, N);
         float inv = 1.0f / sum;
@@ -1281,23 +1091,6 @@ struct tensor * tensor_cumsum(struct tensor * x, int axis) {
     return out;
 }
 
-// ---------------------------------------------------------------------------
-// Linear algebra: tensor_mul_mat dispatches through a function pointer so the
-// app can A/B-switch between the Accelerate BLAS (default, fastest on
-// Apple) and a hand-rolled portable C kernel (research/wasm path; see
-// rnd/blas/ for the comparison bench).
-//
-// Convention (matches ggml_mul_mat):
-//   w: ne[0]=K (contraction, innermost), ne[1]=Nw (output rows)
-//   x: ne[0]=K, ne[1]=Nx
-//   out: ne[0]=Nw, ne[1]=Nx
-// Math: out[n, m] = sum_k w[m, k] * x[n, k] = dot(w[m, :], x[n, :]).
-// Both inputs must be packed for v1.
-//
-// The kernel interface treats A=x and Bt=w (both row-major (rows, K))
-// and computes C = A @ Bt^T row-major (Nx, Nw).
-// ---------------------------------------------------------------------------
-
 typedef void (*tensor_sgemm_fn)(int M, int N, int K,
                             const float * A,  int lda,
                             const float * Bt, int ldb,
@@ -1313,18 +1106,10 @@ static void tensor_sgemm_accelerate(int M, int N, int K,
                 1.0f, A, lda, Bt, ldb, 0.0f, C, ldc);
 }
 
-// Hand-rolled 4x8 register-tiled kernel for C(M,N) = A(M,K) @ Bt^T (Bt
-// stored (N,K) row-major). Pure C99 so the same source compiles for
-// wasm with emcc -msimd128 letting the auto-vectorizer do the SIMD.
-//
-// For-K innermost: 4 broadcast loads from A's 4 rows, 8 broadcast loads
-// from Bt's 8 rows, 32 FMAs accumulated into stack-resident scalars
-// (clang allocates these to NEON regs at -O3).
 static void tensor_sgemm_kernel_4x8(int K,
                                     const float * A,  int lda,
                                     const float * Bt, int ldb,
                                     float * C, int ldc) {
-    // slight deviation of code style in this function is acceptable:
     float c00 = 0, c01 = 0, c02 = 0, c03 = 0, c04 = 0, c05 = 0, c06 = 0, c07 = 0;
     float c10 = 0, c11 = 0, c12 = 0, c13 = 0, c14 = 0, c15 = 0, c16 = 0, c17 = 0;
     float c20 = 0, c21 = 0, c22 = 0, c23 = 0, c24 = 0, c25 = 0, c26 = 0, c27 = 0;
@@ -1405,7 +1190,6 @@ static void tensor_sgemm_tiled(int M, int N, int K,
     }
 }
 
-// Process-global single-threaded selector. Default is Accelerate.
 static tensor_sgemm_fn tensor_sgemm_active = tensor_sgemm_accelerate;
 
 void tensor_set_sgemm_impl(int impl) {
@@ -1420,14 +1204,7 @@ int tensor_get_sgemm_impl(void) {
     return (tensor_sgemm_active == tensor_sgemm_tiled) ? 1 : 0;
 }
 
-
 struct tensor * tensor_mul_mat(struct tensor * w, struct tensor * x) {
-    // Convention exactly matches ggml_mul_mat(a, b):
-    //   a (= w) stored ne[0]=K, ne[1]=Nw  (PyTorch (Nw, K) row-major)
-    //   b (= x) stored ne[0]=K, ne[1]=Nx  (PyTorch (Nx, K) row-major)
-    //   c (= out) stored ne[0]=Nw, ne[1]=Nx
-    // Batched: ne[2] and ne[3] are batch dims; w and x must agree on
-    // them. Output preserves the batch dims.
     if (!tensor_is_packed(w)) { w = tensor_cont(w); }
     if (!tensor_is_packed(x)) { x = tensor_cont(x); }
     assert(w->ne[0] == x->ne[0]);
@@ -1460,21 +1237,11 @@ struct tensor * tensor_mul_mat(struct tensor * w, struct tensor * x) {
     return out;
 }
 
-// ---------------------------------------------------------------------------
-// 1D convolution.
-//
-// Layout: input  (B, Cin, L) with B in ne[2], Cin in ne[1], L in ne[0].
-//         weight (Cout, Cin, K) with K in ne[0], Cin in ne[1],
-//                Cout in ne[2].
-//         output (B, Cout, Lout).
-// ---------------------------------------------------------------------------
-
 static int64_t tensor_conv_out_len(int64_t L_in, int K, int stride, int pad,
                                    int dilation) {
     return (L_in + 2 * pad - dilation * (K - 1) - 1) / stride + 1;
 }
 
-// Produce (B, Cin*K, Lout) im2col matrix. Input (B, Cin, L).
 struct tensor * tensor_im2col(struct tensor * x, int kernel, int stride,
                               int pad, int dilation) {
     assert(tensor_is_packed(x));
@@ -1508,17 +1275,6 @@ struct tensor * tensor_im2col(struct tensor * x, int kernel, int stride,
 
 struct tensor * tensor_conv_1d(struct tensor * w, struct tensor * x,
                        int stride, int pad, int dilation) {
-    // w stored (K, Cin, Cout) — ne[0]=K, ne[1]=Cin, ne[2]=Cout.
-    //   Memory offset for w[co, ci, k] is k + ci*K + co*Cin*K.
-    //   As a row-major matrix it's (Cout, Cin*K), with each "row" co
-    //   holding Cin*K elements ordered (ci outer, k inner).
-    // x stored (L, Cin, B). Memory offset b*Cin*L + ci*L + l.
-    // im2col output cols stored (Lout, Cin*K, B); memory base
-    //   b*Cin*K*Lout + z*Lout + lo, where z = ci*K + k.
-    //   As row-major per batch: cols[b] is (Cin*K, Lout) with lda=Lout.
-    // For each batch b, sgemm:
-    //   out[b] row-major (Cout, Lout) = W (Cout, Cin*K)
-    //                                  @ cols[b] (Cin*K, Lout).
     assert(tensor_is_packed(w));
     assert(tensor_is_packed(x));
     const int64_t K    = w->ne[0];
@@ -1549,7 +1305,6 @@ struct tensor * tensor_conv_1d(struct tensor * w, struct tensor * x,
 
 struct tensor * tensor_conv_1d_dw(struct tensor * w, struct tensor * x,
                           int stride, int pad, int dilation) {
-    // Depthwise: w (K, 1, C), x (L, C, B), out (Lout, C, B).
     assert(tensor_is_packed(w));
     assert(tensor_is_packed(x));
     const int64_t K = w->ne[0];
@@ -1586,8 +1341,6 @@ struct tensor * tensor_conv_1d_dw(struct tensor * w, struct tensor * x,
 
 struct tensor * tensor_conv_transpose_1d(struct tensor * w, struct tensor * x,
                                  int stride, int pad) {
-    // w (K, Cout, Cin) — ne[0]=K, ne[1]=Cout, ne[2]=Cin (PyTorch order).
-    // x (Lin, Cin, B), out (Lout, Cout, B).
     assert(tensor_is_packed(w));
     assert(tensor_is_packed(x));
     const int64_t K    = w->ne[0];
@@ -1601,7 +1354,6 @@ struct tensor * tensor_conv_transpose_1d(struct tensor * w, struct tensor * x,
     if (Lout < 0) { Lout = 0; }
     struct tensor * out = tensor_new_3d(arena_aout(w->arena), Lout, Cout, B);
     memset(out->data, 0, (size_t)tensor_nbytes(out));
-    // Scatter form.
     for (int64_t b = 0; b < B; b++) {
         for (int64_t co = 0; co < Cout; co++) {
             float * orow = out->data + b * Cout * Lout + co * Lout;
@@ -1625,12 +1377,6 @@ struct tensor * tensor_conv_transpose_1d(struct tensor * w, struct tensor * x,
     }
     return out;
 }
-
-// ---------------------------------------------------------------------------
-// Smoke tests (compile as standalone with -DTENSOR_TESTS).
-// Was tests/test_kt_basic.c; folded in to match the node.c.dev
-// single-file-library + bottom-of-file smoke-test convention.
-// ---------------------------------------------------------------------------
 
 #ifdef TENSOR_TESTS
 
@@ -1901,6 +1647,6 @@ int main(void) {
     return g_failures == 0 ? 0 : 1;
 }
 
-#endif /* TENSOR_TESTS */
+#endif
 
-#endif /* TENSOR_C */
+#endif

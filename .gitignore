@@ -1,0 +1,4 @@
+build/
+kittens-tts-cli
+*.wav
+.DS_Store
