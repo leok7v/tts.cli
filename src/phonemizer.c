@@ -42,6 +42,7 @@ static inline void * oom(void * a) {
 }
 
 static inline void arr_grow(struct arr * a, size_t esize, size_t need) {
+    assert(need > 0); // callers always reserve at least one slot (no zero-size malloc)
     if (a->data == NULL) {
         a->capacity = need;
         a->data = oom(malloc(need * esize));
@@ -2788,6 +2789,7 @@ static void apply_stress_prev(struct chars * emit,
         int insert_at = find_last_stressable_vowel(
             phonemes->data, phonemes->count);
         if (insert_at >= 0) {
+            assert(phonemes->data != NULL); // a found vowel implies non-empty data
             char before_vowel = 0;
             for (int pi = insert_at - 1;
                  pi >= 0 && before_vowel == 0; pi--) {
@@ -4712,6 +4714,7 @@ static void reduce_e_unstressed(struct chars * ph,
     }
     // Context 4: bare 'E' after first explicit stress, middle pos.
     if (rule_derived) {
+        assert(ph->count == 0 || ph->data != NULL); // count>0 implies allocated data
         size_t first_stress = (size_t)-1;
         for (size_t pi = 0;
              pi < ph->count && first_stress == (size_t)-1; pi++) {

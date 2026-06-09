@@ -93,15 +93,11 @@ enum trace_level trace_min_level(void) {
                                                   memory_order_acquire);
 }
 
-static const char * trace_level_prefix(enum trace_level lvl) {
-    const char * r = "?????";
-    switch (lvl) {
-        case trace_level_debug: r = "DEBUG"; break;
-        case trace_level_info:  r = "INFO "; break;
-        case trace_level_warn:  r = "WARN "; break;
-        case trace_level_error: r = "ERROR"; break;
-    }
-    return r;
+static const char * trace_level_prefix(enum trace_level level) {
+    static const char * names[] = { "DEBUG", "INFO ", "WARN ", "ERROR" };
+    static const int n  = (int)(sizeof(names) / sizeof(names[0]));
+    const int ix = (int)level - (int)trace_level_debug;
+    return 0 <= ix && ix < n ? names[ix] : "?????";
 }
 
 void _trace_(enum trace_level level,
