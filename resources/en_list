@@ -579,6 +579,8 @@ ftaa	$abbrev
 fyi	$abbrev
 ghz	gIg@h3:ts	$only
 gnupg	g@'nu:pi:dZ'i:
+gnocchi		'noUki
+gnu		'nu:
 guid	g'u:Id $only
 hmm	'mmmmmmm:
 hiv	$abbrev
@@ -725,6 +727,7 @@ no	noU	$allcaps
 (a &)		eIa#nd
 à		%a
 abbey		abi
+abalone		,ab@'loUni
 abdomen		abd@m@n
 abed		a#bEd
 abet		a#bEt
@@ -1312,6 +1315,7 @@ chaise		SeIz
 chalcedony	$2
 chalet		SaleI
 chameleon	k@mi:li@n
+chamois		'Sami
 chamomile	kam@maIl
 champagne	Samp'eIn
 chandelier	Sand@l'i@3
@@ -2764,7 +2768,8 @@ obstinate	$alt2
 occupier	0kju:paI|3
 occult		$alt3
 ocelot		0s@l0t
-ochre		oUk3 
+ochre		oUk3
+ocher		'oUk3
 o'clock		@kl0k
 octave		0ktIv
 october		0kt'oUb3
@@ -2894,6 +2899,7 @@ passersby	pas3zb'aI
 pasted		$alt6
 ?3 pastel	past'El
 pasting		$alt6
+pastiche	pa'sti:S
 pastry		$alt6
 paradise	par@daIs
 partake		$2
@@ -2961,6 +2967,7 @@ pileup		paIlVp
 piñata		pi:nj'ata#
 piñatas		pi:nj'ata#z
 piña		pi:nja#
+pinata		pIn'jA:t@
 pineapple	p'aInap@L
 pinged		pINd
 pinot		pi:noU
@@ -3006,6 +3013,7 @@ posse		p0si
 postage		poUstI2dZ
 postdate	$2
 potemkin	poUt'EmkIn
+potpourri	,poUpU'ri:
 practise	praktI2s
 prayer		pre@
 precedence	prEsI#d@ns
@@ -3580,6 +3588,7 @@ syllabi		sIl@baI
 symbol		sImb@L
 sync		sINk
 syntax		sInt2aks
+synecdoche	sI'nEkd@ki
 syphilis	sIf@lI2s
 syphon		$alt2
 
