@@ -42,7 +42,7 @@ static inline void * oom(void * a) {
 }
 
 static inline void arr_grow(struct arr * a, size_t esize, size_t need) {
-    assert(need > 0); // callers always reserve at least one slot (no zero-size malloc)
+    assert(need > 0);  // callers reserve a slot; no zero-size malloc
     if (a->data == NULL) {
         a->capacity = need;
         a->data = oom(malloc(need * esize));
@@ -147,9 +147,9 @@ static inline uint64_t map_hash(const struct map * m, const void * k) {
     return h;
 }
 
-static inline int map_eq(const struct map * m, const void * a,
-                         const void * b) {
-    int r = 0;
+static inline int32_t map_eq(const struct map * m, const void * a,
+                             const void * b) {
+    int32_t r = 0;
     if (m->key_kind == MAP_KEY_INT) {
         r = *(const int64_t *)a == *(const int64_t *)b;
     } else {
@@ -233,7 +233,7 @@ static void * map_put(struct map * m, const void * k, const void * v) {
     size_t mask = m->capacity - 1;
     size_t j = (size_t)map_hash(m, k) & mask;
     size_t tomb = (size_t)-1;
-    int done = 0;
+    int32_t done = 0;
     while (!done && m->states[j] != MAP_EMPTY) {
         if (m->states[j] == MAP_TOMBSTONE) {
             if (tomb == (size_t)-1) { tomb = j; }
@@ -264,7 +264,7 @@ static void * map_get(struct map * m, const void * k) {
     if (m->capacity > 0) {
         size_t mask = m->capacity - 1;
         size_t j = (size_t)map_hash(m, k) & mask;
-        int done = 0;
+        int32_t done = 0;
         while (!done && m->states[j] != MAP_EMPTY) {
             if (m->states[j] == MAP_LIVE
                 && map_eq(m, map_k(m, j), k)) {
@@ -282,7 +282,7 @@ static void map_remove(struct map * m, const void * k) {
     if (m->capacity > 0) {
         size_t mask = m->capacity - 1;
         size_t j = (size_t)map_hash(m, k) & mask;
-        int done = 0;
+        int32_t done = 0;
         while (!done && m->states[j] != MAP_EMPTY) {
             if (m->states[j] == MAP_LIVE
                 && map_eq(m, map_k(m, j), k)) {
@@ -341,6 +341,15 @@ static bool is_vowel_letter(char c) {
     c = (char)tolower((unsigned char)c);
     return c == 'a' || c == 'e' || c == 'i' || c == 'o'
         || c == 'u' || c == 'y';
+}
+
+static bool is_plain_vowel(char lc) {
+    return lc == 'a' || lc == 'e' || lc == 'i' || lc == 'o'
+        || lc == 'u';
+}
+
+static bool is_nasal_letter(char lc) {
+    return lc == 'm' || lc == 'h' || lc == 'n';
 }
 
 static bool has_any_vowel_letter(const char * s, size_t n) {
@@ -404,13 +413,27 @@ static void replace_first_char(struct chars * s, char from, char to) {
 
 // Parse "$1".."$6" stress-position flag. Returns 0 when `flag` is not
 // in that form. `len` is the byte length of the flag (no NUL needed).
-static int parse_stress_n(const char * flag, size_t len) {
-    int n = 0;
+static int32_t parse_stress_n(const char * flag, size_t len) {
+    int32_t n = 0;
     if (len == 2 && flag[0] == '$'
         && flag[1] >= '1' && flag[1] <= '6') {
         n = flag[1] - '0';
     }
     return n;
+}
+
+// Exact match of an unterminated field against a NUL-terminated literal.
+
+static bool flag_is(const char * fd, size_t fc, const char * name) {
+    size_t n = strlen(name);
+    return fc == n && memcmp(fd, name, n) == 0;
+}
+
+// "$alt1".."$alt6"; the digit selects one bit of word_alt_flags.
+
+static bool flag_is_alt_n(const char * fd, size_t fc) {
+    return fc == 5 && fd[0] == '$' && fd[1] == 'a' && fd[2] == 'l'
+        && fd[3] == 't' && fd[4] >= '1' && fd[4] <= '6';
 }
 
 // ---------------------------------------------------------------------------
@@ -442,7 +465,7 @@ struct entry_flags {
     bool onlys, only;
     bool grammar;
     bool strend2, u2;
-    int  stress_n;
+    int32_t stress_n;
 };
 
 // ---------------------------------------------------------------------------
@@ -479,7 +502,7 @@ static void split_ws(const char * s, size_t n, struct charsv * out) {
 // the original line. Caller owns out (charsv_clear-style reset at
 // entry).
 static void parse_leading_dialect(const char * s, size_t n,
-                                  int * cond, bool * negated,
+                                  int32_t * cond, bool * negated,
                                   struct chars * out) {
     *cond = 0;
     *negated = false;
@@ -498,7 +521,7 @@ static void parse_leading_dialect(const char * s, size_t n,
                 *negated = true;
                 cs++;
             }
-            int v = 0;
+            int32_t v = 0;
             bool any_digit = false;
             while (cs < ce && isdigit((unsigned char)s[cs])) {
                 v = v * 10 + (s[cs] - '0');
@@ -553,9 +576,9 @@ static bool is_vowel_code(const char * code, size_t n) {
 // Count vowel-letter groups in `s[0..n)` (consecutive vowels = 1
 // group). A silent trailing magic-e ('e' after a non-vowel) doesn't
 // add a syllable. Matches countSuffixSyllables in phonemizer.cpp.
-static int count_suffix_syllables(const char * s, size_t n) {
+static int32_t count_suffix_syllables(const char * s, size_t n) {
     static const char vow_let[] = "aeiouAEIOU";
-    int r = 0;
+    int32_t r = 0;
     bool in_vowel = false;
     for (size_t i = 0; i < n; i++) {
         if (strchr(vow_let, s[i]) != NULL) {
@@ -600,7 +623,7 @@ static bool prefix_has_full_vowel(const char * phonemes, size_t n) {
     };
     bool found = false;
     for (size_t pi = 0; pi < n && !found; pi++) {
-        for (int fi = 0; full_vowels[fi] != NULL && !found; fi++) {
+        for (int32_t fi = 0; full_vowels[fi] != NULL && !found; fi++) {
             const char * fv = full_vowels[fi];
             size_t fvlen = strlen(fv);
             found = pi + fvlen <= n && memcmp(phonemes + pi, fv, fvlen) == 0;
@@ -611,8 +634,8 @@ static bool prefix_has_full_vowel(const char * phonemes, size_t n) {
 
 // Walk `phonemes[0..n)` as a sequence of phoneme codes (multi-char
 // first, single-char fallback) and return the vowel-code count.
-static int count_prefix_vowels(const char * phonemes, size_t n) {
-    int r = 0;
+static int32_t count_prefix_vowels(const char * phonemes, size_t n) {
+    int32_t r = 0;
     size_t pi = 0;
     while (pi < n) {
         char c = phonemes[pi];
@@ -620,7 +643,7 @@ static int count_prefix_vowels(const char * phonemes, size_t n) {
             pi++;
         } else {
             bool mch = false;
-            for (int mi = 0; vowel_codes_multi[mi] != NULL && !mch; mi++) {
+            for (int32_t mi = 0; vowel_codes_multi[mi] != NULL && !mch; mi++) {
                 const char * mc = vowel_codes_multi[mi];
                 size_t ml = strlen(mc);
                 mch = pi + ml <= n && memcmp(phonemes + pi, mc, ml) == 0;
@@ -638,27 +661,28 @@ static int count_prefix_vowels(const char * phonemes, size_t n) {
     return r;
 }
 
-// True iff the LAST vowel phoneme code in `phonemes[0..n)` is a schwa-
-// type (3, 3:, @, @2, @5, @L, I2, I#, a#). Used by the prefix-stress
-// heuristic ("super" + "nova/market" -> keep prefix primary).
-static bool prefix_ends_in_schwa(const char * phonemes, size_t n) {
+// The last vowel phoneme code in `phonemes[0..n)`, or NULL when it has
+// none. `*len` carries its byte length.
+
+static const char * last_vowel_code(const char * phonemes, size_t n,
+                                    size_t * len) {
     const char * last_v = NULL;
-    size_t last_v_len = 0;
     size_t pi = 0;
+    *len = 0;
     while (pi < n) {
         char c = phonemes[pi];
         if (c == '\'' || c == ',' || c == '%' || c == '=') {
             pi++;
         } else {
             bool mch = false;
-            for (int mi = 0; vowel_codes_multi[mi] != NULL && !mch; mi++) {
+            for (int32_t mi = 0; vowel_codes_multi[mi] != NULL && !mch; mi++) {
                 const char * mc = vowel_codes_multi[mi];
                 size_t ml = strlen(mc);
                 mch = pi + ml <= n && memcmp(phonemes + pi, mc, ml) == 0;
                 if (mch) {
                     if (is_vowel_code(mc, ml)) {
                         last_v = mc;
-                        last_v_len = ml;
+                        *len = ml;
                     }
                     pi += ml;
                 }
@@ -666,24 +690,38 @@ static bool prefix_ends_in_schwa(const char * phonemes, size_t n) {
             if (!mch) {
                 if (is_vowel_code(&phonemes[pi], 1)) {
                     last_v = &phonemes[pi];
-                    last_v_len = 1;
+                    *len = 1;
                 }
                 pi++;
             }
         }
     }
+    return last_v;
+}
+
+// 3, 3:, @, @2, @5, @L, I2, I#, a#. A zero length is no vowel at all
+// and answers false without a dereference.
+
+static bool is_schwa_code(const char * v, size_t n) {
     bool r = false;
-    if (last_v != NULL) {
-        r = (last_v_len == 1 && last_v[0] == '3')
-         || (last_v_len == 2 && last_v[0] == '3' && last_v[1] == ':')
-         || (last_v_len == 1 && last_v[0] == '@')
-         || (last_v_len == 2 && last_v[0] == '@'
-             && (last_v[1] == '2' || last_v[1] == '5' || last_v[1] == 'L'))
-         || (last_v_len == 2 && last_v[0] == 'I'
-             && (last_v[1] == '2' || last_v[1] == '#'))
-         || (last_v_len == 2 && last_v[0] == 'a' && last_v[1] == '#');
+    if (n == 1) {
+        r = v[0] == '3' || v[0] == '@';
+    } else if (n == 2) {
+        r = (v[0] == '3' && v[1] == ':')
+         || (v[0] == '@' && (v[1] == '2' || v[1] == '5' || v[1] == 'L'))
+         || (v[0] == 'I' && (v[1] == '2' || v[1] == '#'))
+         || (v[0] == 'a' && v[1] == '#');
     }
     return r;
+}
+
+// Drives the prefix-stress heuristic ("super" + "nova/market" -> keep
+// prefix primary).
+
+static bool prefix_ends_in_schwa(const char * phonemes, size_t n) {
+    size_t last_v_len = 0;
+    const char * last_v = last_vowel_code(phonemes, n, &last_v_len);
+    return is_schwa_code(last_v, last_v_len);
 }
 
 // ---------------------------------------------------------------------------
@@ -736,7 +774,7 @@ static void set_init(struct map * m) {
 }
 
 static void imap_init(struct map * m) {
-    map_init(m, MAP_KEY_CHARS, sizeof(struct chars), sizeof(int), NULL);
+    map_init(m, MAP_KEY_CHARS, sizeof(struct chars), sizeof(int32_t), NULL);
 }
 
 static void pmap_init(struct map * m) {
@@ -749,7 +787,7 @@ static void pmap_init(struct map * m) {
 // ---------------------------------------------------------------------------
 //
 // Mirrors the private members of `class IPAPhonemizer` (see
-// phonemizer.h). Field comments are short — see the C++ header for
+// phonemizer.h). Field comments are short -- see the C++ header for
 // the full intent of each map / set. Maps are zero-init friendly;
 // phonemizer_state_init below wires the key_kind / value_size /
 // value_free for each one before the first put / get.
@@ -775,17 +813,17 @@ struct letter_groups {
 
 // A single phoneme rule (one line from the en_rules file).
 struct phoneme_rule {
-    int             condition;          // 0=always, 3=en-us, ...
+    int32_t         condition;          // 0=always, 3=en-us, ...
     bool            condition_negated;
     struct chars    left_ctx;
     struct chars    match;
     struct chars    right_ctx;
     struct chars    phonemes;
-    int             del_fwd;
+    int32_t         del_fwd;
     bool            is_prefix;
     bool            is_suffix;
-    int             suffix_strip_len;
-    int             suffix_flags;
+    int32_t         suffix_strip_len;
+    int32_t         suffix_flags;
 };
 
 define_array(struct phoneme_rule, rules);
@@ -1034,12 +1072,12 @@ static void smap_erase(struct map * m, const char * k, size_t kn) {
 }
 
 // Int map: overwrite, insert-if-absent, lookup, OR-into.
-static void imap_set(struct map * m, const char * k, size_t kn, int v) {
+static void imap_set(struct map * m, const char * k, size_t kn, int32_t v) {
     struct chars view = chars_view(k, kn);
     map_put(m, &view, &v);
 }
 
-static bool imap_emplace(struct map * m, const char * k, size_t kn, int v) {
+static bool imap_emplace(struct map * m, const char * k, size_t kn, int32_t v) {
     struct chars view = chars_view(k, kn);
     bool inserted = false;
     if (map_get(m, &view) == NULL) {
@@ -1049,14 +1087,14 @@ static bool imap_emplace(struct map * m, const char * k, size_t kn, int v) {
     return inserted;
 }
 
-static int * imap_get(struct map * m, const char * k, size_t kn) {
+static int32_t * imap_get(struct map * m, const char * k, size_t kn) {
     struct chars view = chars_view(k, kn);
     return map_get(m, &view);
 }
 
 // OR-into: imap[k] |= bit (insert with bit if absent).
-static void imap_or(struct map * m, const char * k, size_t kn, int bit) {
-    int * v = imap_get(m, k, kn);
+static void imap_or(struct map * m, const char * k, size_t kn, int32_t bit) {
+    int32_t * v = imap_get(m, k, kn);
     if (v != NULL) {
         *v |= bit;
     } else {
@@ -1086,16 +1124,16 @@ static bool pmap_emplace(struct map * m, const char * k, size_t kn,
 
 // Resolve word_alt_flags: explicit param if >= 0, else look up the
 // word's own $altN bitmask from word_alt_flags state map.
-static int determine_alt_flags(struct phonemizer * p,
-                               const char * word, size_t n,
-                               int explicit_flags) {
-    int r = 0;
+static int32_t determine_alt_flags(struct phonemizer * p,
+                                   const char * word, size_t n,
+                                   int32_t explicit_flags) {
+    int32_t r = 0;
     if (explicit_flags >= 0) {
         r = explicit_flags;
     } else {
         struct chars wl = {0};
         to_lower(word, n, &wl);
-        int * v = map_get(&p->word_alt_flags, &wl);
+        int32_t * v = map_get(&p->word_alt_flags, &wl);
         if (v != NULL) { r = *v; }
         chars_free(&wl);
     }
@@ -1113,7 +1151,7 @@ static void devoice_ed_suffix(const char * stem_ph, size_t stem_n,
                  && memcmp(suffix->data, "d#", 2) == 0;
     if (is_dhash && stem_n > 0) {
         char last_ph = 0;
-        for (int sj = (int)stem_n - 1; sj >= 0 && last_ph == 0; sj--) {
+        for (int32_t sj = (int32_t)stem_n - 1; sj >= 0 && last_ph == 0; sj--) {
             char c = stem_ph[sj];
             if (c != '\'' && c != ',' && c != '%' && c != '='
                 && c != '\x01') {
@@ -1137,7 +1175,7 @@ static void devoice_ed_suffix(const char * stem_ph, size_t stem_n,
 // exists yet (monosyllabic), or the last vowel is a "full" vowel
 // (not in `weak_vowels`). For -ing weak_vowels = "I@"; for -ed
 // weak_vowels = "I@3" (rhotic ɚ is already a complete vowel).
-// Empty base_ph defaults to true — caller's outer flow decides.
+// Empty base_ph defaults to true -- caller's outer flow decides.
 static bool should_use_magic_e_for_cvc_stem(const char * base_ph,
                                             size_t bn,
                                             const char * weak_vowels,
@@ -1145,12 +1183,12 @@ static bool should_use_magic_e_for_cvc_stem(const char * base_ph,
     bool use_magic_e = true;
     if (bn > 0) {
         static const char vc[] = "aAeEiIoOuUV03@";
-        int last_v = -1;
-        for (int k = (int)bn - 1; k >= 0 && last_v < 0; k--) {
+        int32_t last_v = -1;
+        for (int32_t k = (int32_t)bn - 1; k >= 0 && last_v < 0; k--) {
             if (strchr(vc, base_ph[k]) != NULL) { last_v = k; }
         }
         if (last_v > 0) {
-            int vstart = last_v;
+            int32_t vstart = last_v;
             while (vstart > 0
                    && (strchr(vc, base_ph[vstart - 1]) != NULL
                        || base_ph[vstart - 1] == ':'
@@ -1176,23 +1214,26 @@ static bool should_use_magic_e_for_cvc_stem(const char * base_ph,
 // -ing follows. Drop "@L" -> "@l" (vowel+l base) or "l" (other
 // consonant+l). Exceptions: 't' before 'l' ("bottling"), and "-ngl"
 // endings ("tingling" handled elsewhere as "@-lI2N").
+// "-tl" and "-ngl" keep their syllabic l.
+
+static bool syllabic_l_blocked(const char * base, size_t bn) {
+    bool base_prev_is_t = bn >= 2 && base[bn - 2] == 't';
+    bool base_ends_in_ngl = bn >= 3
+                         && base[bn - 3] == 'n'
+                         && base[bn - 2] == 'g'
+                         && base[bn - 1] == 'l';
+    return base_prev_is_t || base_ends_in_ngl;
+}
+
 static void simplify_syllabic_l_for_ing(const char * base, size_t bn,
                                         struct chars * sph) {
     bool ends_in_at_L = sph->count >= 2
                      && sph->data[sph->count - 2] == '@'
                      && sph->data[sph->count - 1] == 'L';
     bool base_ends_in_l = bn >= 2 && base[bn - 1] == 'l';
-    bool base_prev_is_t = bn >= 2 && base[bn - 2] == 't';
-    bool base_ends_in_ngl = bn >= 3
-                         && base[bn - 3] == 'n'
-                         && base[bn - 2] == 'g'
-                         && base[bn - 1] == 'l';
     if (ends_in_at_L && base_ends_in_l
-        && !base_prev_is_t && !base_ends_in_ngl) {
-        char penult = base[bn - 2];
-        bool vowel_before_l = penult == 'a' || penult == 'e'
-                           || penult == 'i' || penult == 'o'
-                           || penult == 'u';
+        && !syllabic_l_blocked(base, bn)) {
+        bool vowel_before_l = is_plain_vowel(base[bn - 2]);
         sph->count -= 2;        // drop trailing "@L"
         sph->data[sph->count] = '\0';
         chars_puts(sph, vowel_before_l ? "@l" : "l");
@@ -1203,17 +1244,18 @@ static void simplify_syllabic_l_for_ing(const char * base, size_t bn,
 // Dictionary loader (en_list reader).
 // ---------------------------------------------------------------------------
 
-// Storage dispatch for a single parsed en_list entry. Mirrors the
-// big if/else-if chain in IPAPhonemizer::storeDictionaryEntry.
-static void store_dictionary_entry(struct phonemizer * p,
-                                   const char * w, size_t wn,
-                                   const char * ph, size_t pn,
-                                   int dialect_cond,
-                                   const struct entry_flags * f) {
+static void store_entry_pos_sets(struct phonemizer * p,
+                                 const char * w, size_t wn,
+                                 const struct entry_flags * f) {
     if (f->pastf) { set_add(&p->pastf_words, w, wn); }
     if (f->nounf) { set_add(&p->nounf_words, w, wn); }
     if (f->verbf) { set_add(&p->verbf_words, w, wn); }
-    bool is_flag_only = pn > 0 && ph[0] == '$';
+}
+
+static void store_entry_stress_pos(struct phonemizer * p,
+                                   const char * w, size_t wn,
+                                   bool is_flag_only,
+                                   const struct entry_flags * f) {
     if (f->stress_n > 0 && !f->noun && !f->verb
         && (!f->grammar || is_flag_only)) {
         imap_emplace(&p->stress_pos, w, wn, f->stress_n);
@@ -1221,12 +1263,73 @@ static void store_dictionary_entry(struct phonemizer * p,
             set_add(&p->noun_form_stress, w, wn);
         }
     }
+}
+
+// An "$altN" in the phonemes column retracts an earlier plain entry.
+
+static void store_flag_only_entry(struct phonemizer * p,
+                                  const char * w, size_t wn,
+                                  const char * ph, size_t pn,
+                                  const struct entry_flags * f) {
+    if (flag_is_alt_n(ph, pn)) { smap_erase(&p->dict, w, wn); }
+    if (f->verb) { set_add(&p->verb_flag_words, w, wn); }
+}
+
+// A dialect-conditional $onlys overwrites; an unconditional one yields
+// to whatever is already there and parks its own form in the bare dict.
+
+static void store_onlys_entry(struct phonemizer * p,
+                              const char * w, size_t wn,
+                              const char * ph, size_t pn,
+                              int32_t dialect_cond) {
+    if (dialect_cond != 0) {
+        smap_set(&p->dict, w, wn, ph, pn);
+        set_add(&p->onlys_words, w, wn);
+    } else {
+        bool inserted = smap_emplace(&p->dict, w, wn, ph, pn);
+        if (inserted) {
+            set_add(&p->onlys_words, w, wn);
+        } else if (ph[0] != '$') {
+            smap_set(&p->onlys_bare_dict, w, wn, ph, pn);
+        }
+    }
+}
+
+static void store_plain_entry(struct phonemizer * p,
+                              const char * w, size_t wn,
+                              const char * ph, size_t pn,
+                              const struct entry_flags * f) {
+    smap_set(&p->dict, w, wn, ph, pn);
+    if (f->only) { set_add(&p->only_words, w, wn); }
+    if (f->strend2 && wn >= 2 && pn > 0
+        && ph[0] != ',' && ph[0] != '\'' && ph[0] != '%') {
+        struct strpair sp = {0};
+        chars_put(&sp.a, w, wn);
+        chars_put(&sp.b, ph, pn);
+        strpairs_put(&p->compound_prefixes, sp);
+        set_add(&p->strend_words, w, wn);
+    }
+    if (f->strend2 && pn > 0 && ph[0] == ',') {
+        set_add(&p->comma_strend2_words, w, wn);
+    }
+    if (f->u2 && f->strend2) {
+        set_add(&p->u2_strend2_words, w, wn);
+    }
+}
+
+// Storage dispatch for a single parsed en_list entry. Mirrors the
+// big if/else-if chain in IPAPhonemizer::storeDictionaryEntry.
+
+static void store_dictionary_entry(struct phonemizer * p,
+                                   const char * w, size_t wn,
+                                   const char * ph, size_t pn,
+                                   int32_t dialect_cond,
+                                   const struct entry_flags * f) {
+    store_entry_pos_sets(p, w, wn, f);
+    bool is_flag_only = pn > 0 && ph[0] == '$';
+    store_entry_stress_pos(p, w, wn, is_flag_only, f);
     if (is_flag_only) {
-        bool is_alt = pn == 5 && ph[0] == '$'
-                   && ph[1] == 'a' && ph[2] == 'l' && ph[3] == 't'
-                   && ph[4] >= '1' && ph[4] <= '6';
-        if (is_alt) { smap_erase(&p->dict, w, wn); }
-        if (f->verb) { set_add(&p->verb_flag_words, w, wn); }
+        store_flag_only_entry(p, w, wn, ph, pn, f);
     } else if (f->noun) {
         smap_emplace(&p->noun_dict, w, wn, ph, pn);
     } else if (f->verb) {
@@ -1244,41 +1347,117 @@ static void store_dictionary_entry(struct phonemizer * p,
     } else if (f->past) {
         smap_emplace(&p->past_dict, w, wn, ph, pn);
     } else if (f->onlys) {
-        if (dialect_cond != 0) {
-            smap_set(&p->dict, w, wn, ph, pn);
-            set_add(&p->onlys_words, w, wn);
-        } else {
-            bool inserted = smap_emplace(&p->dict, w, wn, ph, pn);
-            if (inserted) {
-                set_add(&p->onlys_words, w, wn);
-            } else if (ph[0] != '$') {
-                smap_set(&p->onlys_bare_dict, w, wn, ph, pn);
-            }
-        }
+        store_onlys_entry(p, w, wn, ph, pn, dialect_cond);
     } else {
-        smap_set(&p->dict, w, wn, ph, pn);
-        if (f->only) { set_add(&p->only_words, w, wn); }
-        if (f->strend2 && wn >= 2 && pn > 0
-            && ph[0] != ',' && ph[0] != '\'' && ph[0] != '%') {
-            struct strpair sp = {0};
-            chars_put(&sp.a, w, wn);
-            chars_put(&sp.b, ph, pn);
-            strpairs_put(&p->compound_prefixes, sp);
-            set_add(&p->strend_words, w, wn);
-        }
-        if (f->strend2 && pn > 0 && ph[0] == ',') {
-            set_add(&p->comma_strend2_words, w, wn);
-        }
-        if (f->u2 && f->strend2) {
-            set_add(&p->u2_strend2_words, w, wn);
-        }
+        store_plain_entry(p, w, wn, ph, pn, f);
     }
+}
+
+struct phrase_flags {
+    bool atend;
+    bool pause;
+    bool u2_plus;
+};
+
+static struct phrase_flags parse_phrase_flags(
+        const struct charsv * rp) {
+    struct phrase_flags f = {0};
+    for (size_t ri = 1; ri < rp->count; ri++) {
+        const struct chars * r = &rp->data[ri];
+        if (flag_is(r->data, r->count, "$atend")) { f.atend = true; }
+        if (flag_is(r->data, r->count, "$pause")) { f.pause = true; }
+        if (flag_is(r->data, r->count, "$u2+")) { f.u2_plus = true; }
+    }
+    return f;
+}
+
+// A two-word phrase with no '.' in either word and neither $atend nor
+// $pause is the only shape the phrase dictionaries hold.
+
+static bool phrase_is_storable(const struct charsv * words,
+                               const struct phrase_flags * f) {
+    return words->count == 2 && !f->atend && !f->pause
+        && memchr(words->data[0].data, '.',
+                  words->data[0].count) == NULL
+        && memchr(words->data[1].data, '.',
+                  words->data[1].count) == NULL;
+}
+
+// "word1 word2", lowercased.
+
+static void phrase_key(const struct charsv * words,
+                       struct chars * key) {
+    struct chars w0lo = {0};
+    struct chars w1lo = {0};
+    to_lower(words->data[0].data, words->data[0].count, &w0lo);
+    to_lower(words->data[1].data, words->data[1].count, &w1lo);
+    chars_put(key, w0lo.data, w0lo.count);
+    chars_put_byte(key, ' ');
+    chars_put(key, w1lo.data, w1lo.count);
+    chars_free(&w0lo);
+    chars_free(&w1lo);
+}
+
+// Offset of the "||" that splits a phrase across its two words, or
+// (size_t)-1.
+
+static size_t phrase_split_at(const struct chars * phs) {
+    size_t k = 0;
+    while (k + 1 < phs->count
+           && !(phs->data[k] == '|' && phs->data[k + 1] == '|')) {
+        k++;
+    }
+    return k + 1 < phs->count ? k : (size_t)-1;
+}
+
+// A phrase carrying no stress of its own is marked unstressed.
+
+static void store_phrase(struct phonemizer * p,
+                         const struct chars * key,
+                         const struct chars * phs,
+                         bool has_u2_plus) {
+    bool has_prime = memchr(phs->data, '\'', phs->count) != NULL;
+    bool starts_pct = phs->count > 0 && phs->data[0] == '%';
+    struct chars phon = {0};
+    if (!has_prime && !starts_pct) { chars_put_byte(&phon, '%'); }
+    chars_put(&phon, phs->data, phs->count);
+    smap_emplace(&p->phrase_dict, key->data, key->count,
+                 phon.data, phon.count);
+    chars_free(&phon);
+    if (has_u2_plus) {
+        set_add(&p->keep_sec_phrase_keys, key->data, key->count);
+    }
+}
+
+static void store_phrase_entry(struct phonemizer * p,
+                               const struct chars * words_str,
+                               const struct charsv * rp) {
+    struct charsv words = {0};
+    split_ws(words_str->data, words_str->count, &words);
+    struct phrase_flags f = parse_phrase_flags(rp);
+    if (phrase_is_storable(&words, &f)) {
+        struct chars key = {0};
+        phrase_key(&words, &key);
+        const struct chars * phs = &rp->data[0];
+        size_t pa = phrase_split_at(phs);
+        if (pa != (size_t)-1) {
+            size_t pb_off = pa + 2;
+            pmap_emplace(&p->phrase_split_dict, key.data, key.count,
+                         phs->data, pa,
+                         phs->data + pb_off, phs->count - pb_off);
+        } else {
+            store_phrase(p, &key, phs, f.u2_plus);
+        }
+        chars_free(&key);
+    }
+    charsv_clear(&words);
 }
 
 // Phrase entry parser. Reads "(word1 word2) phonemes [flags]" and
 // stores into phrase_dict / phrase_split_dict / keep_sec_phrase_keys.
 // Returns true iff `line` was a phrase entry (consumed); false means
 // caller continues normal word-entry processing.
+
 static bool parse_phrase_entry(struct phonemizer * p,
                                const char * line, size_t n) {
     bool is_phrase = n > 0 && line[0] == '(';
@@ -1287,94 +1466,16 @@ static bool parse_phrase_entry(struct phonemizer * p,
         if (close != NULL && close > line + 1) {
             size_t words_len = (size_t)(close - line) - 1;
             size_t rest_off = (size_t)(close - line) + 1;
-            size_t rest_len = n - rest_off;
             struct chars words_str = {0};
             struct chars rest_str = {0};
             trim(line + 1, words_len, &words_str);
-            trim(line + rest_off, rest_len, &rest_str);
+            trim(line + rest_off, n - rest_off, &rest_str);
             if (rest_str.count > 0 && rest_str.data[0] != '$') {
                 struct charsv rp = {0};
                 split_ws(rest_str.data, rest_str.count, &rp);
                 if (rp.count > 0 && rp.data[0].count > 0
                     && rp.data[0].data[0] != '$') {
-                    struct charsv words = {0};
-                    split_ws(words_str.data, words_str.count, &words);
-                    bool has_atend = false;
-                    bool has_pause = false;
-                    bool has_u2_plus = false;
-                    for (size_t ri = 1; ri < rp.count; ri++) {
-                        const struct chars * r = &rp.data[ri];
-                        if (r->count == 6
-                            && memcmp(r->data, "$atend", 6) == 0) {
-                            has_atend = true;
-                        }
-                        if (r->count == 6
-                            && memcmp(r->data, "$pause", 6) == 0) {
-                            has_pause = true;
-                        }
-                        if (r->count == 4
-                            && memcmp(r->data, "$u2+",  4) == 0) {
-                            has_u2_plus = true;
-                        }
-                    }
-                    bool storable = words.count == 2
-                        && !has_atend && !has_pause
-                        && memchr(words.data[0].data, '.',
-                                  words.data[0].count) == NULL
-                        && memchr(words.data[1].data, '.',
-                                  words.data[1].count) == NULL;
-                    if (storable) {
-                        struct chars w0lo = {0};
-                        struct chars w1lo = {0};
-                        to_lower(words.data[0].data,
-                                 words.data[0].count, &w0lo);
-                        to_lower(words.data[1].data,
-                                 words.data[1].count, &w1lo);
-                        struct chars key = {0};
-                        chars_put(&key, w0lo.data, w0lo.count);
-                        chars_put_byte(&key, ' ');
-                        chars_put(&key, w1lo.data, w1lo.count);
-                        chars_free(&w0lo);
-                        chars_free(&w1lo);
-                        const struct chars * phs = &rp.data[0];
-                        const char * pipe = NULL;
-                        for (size_t k = 0;
-                             pipe == NULL && k + 1 < phs->count; k++) {
-                            if (phs->data[k] == '|'
-                                && phs->data[k + 1] == '|') {
-                                pipe = phs->data + k;
-                            }
-                        }
-                        if (pipe != NULL) {
-                            size_t pa = (size_t)(pipe - phs->data);
-                            size_t pb_off = pa + 2;
-                            size_t pb_len = phs->count - pb_off;
-                            pmap_emplace(&p->phrase_split_dict,
-                                         key.data, key.count,
-                                         phs->data, pa,
-                                         phs->data + pb_off, pb_len);
-                        } else {
-                            bool has_prime = memchr(phs->data, '\'',
-                                                    phs->count) != NULL;
-                            bool starts_pct = phs->count > 0
-                                           && phs->data[0] == '%';
-                            struct chars phon = {0};
-                            if (!has_prime && !starts_pct) {
-                                chars_put_byte(&phon, '%');
-                            }
-                            chars_put(&phon, phs->data, phs->count);
-                            smap_emplace(&p->phrase_dict,
-                                         key.data, key.count,
-                                         phon.data, phon.count);
-                            chars_free(&phon);
-                            if (has_u2_plus) {
-                                set_add(&p->keep_sec_phrase_keys,
-                                        key.data, key.count);
-                            }
-                        }
-                        chars_free(&key);
-                    }
-                    charsv_clear(&words);
+                    store_phrase_entry(p, &words_str, &rp);
                 }
                 charsv_clear(&rp);
             }
@@ -1385,10 +1486,108 @@ static bool parse_phrase_entry(struct phonemizer * p,
     return is_phrase;
 }
 
+
+static void entry_flag_pos_bits(const char * fd, size_t fc,
+                                struct entry_flags * flags) {
+    if (flag_is(fd, fc, "$noun"))  { flags->noun = true; }
+    if (flag_is(fd, fc, "$verb"))  { flags->verb = true;
+                                     flags->grammar = true; }
+    if (flag_is(fd, fc, "$past"))  { flags->past = true; }
+    if (flag_is(fd, fc, "$pastf")) { flags->pastf = true; }
+    if (flag_is(fd, fc, "$nounf")) { flags->nounf = true;
+                                     flags->grammar = true; }
+    if (flag_is(fd, fc, "$verbf")) { flags->verbf = true;
+                                     flags->grammar = true; }
+}
+
+static void entry_flag_context_bits(const char * fd, size_t fc,
+                                    struct entry_flags * flags) {
+    if (flag_is(fd, fc, "$atend") || flag_is(fd, fc, "$allcaps")
+        || flag_is(fd, fc, "$sentence")) {
+        flags->atend = true;
+    }
+    if (flag_is(fd, fc, "$capital")) { flags->capital = true; }
+    if (flag_is(fd, fc, "$atstart")) { flags->atstart = true; }
+}
+
+static void entry_flag_variant_bits(const char * fd, size_t fc,
+                                    struct entry_flags * flags) {
+    bool eq_verbf   = flag_is(fd, fc, "$verbf");
+    bool eq_strend2 = flag_is(fd, fc, "$strend2");
+    bool eq_alt2    = flag_is(fd, fc, "$alt2");
+    bool eq_alt3    = flag_is(fd, fc, "$alt3");
+    bool eq_only    = flag_is(fd, fc, "$only");
+    if (eq_verbf || eq_strend2 || eq_alt2 || eq_alt3 || eq_only) {
+        flags->grammar = true;
+    }
+    if (eq_only)   { flags->only = true; }
+    if (flag_is(fd, fc, "$onlys")) { flags->onlys = true; }
+    if (eq_strend2) { flags->strend2 = true; }
+    if (flag_is(fd, fc, "$u2")) { flags->u2 = true; }
+    if (flags->stress_n == 0) {
+        flags->stress_n = parse_stress_n(fd, fc);
+    }
+}
+
+// The flags whose effect is a word-set membership rather than a bit.
+
+static void entry_flag_sets(struct phonemizer * p,
+                            const char * fd, size_t fc,
+                            const char * w, size_t wn,
+                            const char * ph, size_t pn) {
+    if (flag_is(fd, fc, "$u+")) {
+        set_add(&p->unstressed_words, w, wn);
+        bool has_comma = memchr(ph, ',', pn) != NULL;
+        bool has_prime = memchr(ph, '\'', pn) != NULL;
+        if (has_comma && !has_prime) {
+            set_add(&p->u_plus_secondary_words, w, wn);
+        }
+    }
+    if (flag_is(fd, fc, "$u")) { set_add(&p->unstressed_words, w, wn); }
+    if (flag_is(fd, fc, "$unstressend")) {
+        set_add(&p->unstressend_words, w, wn);
+    }
+    if (flag_is(fd, fc, "$abbrev")) { set_add(&p->abbrev_words, w, wn); }
+    if (flag_is_alt_n(fd, fc)) {
+        imap_or(&p->word_alt_flags, w, wn, 1 << (fd[4] - '1'));
+    }
+}
+
+// An entry may carry a flag in the phonemes column instead of a
+// phoneme string -- the "gi $abbrev" pattern.
+
+static void phoneme_field_as_flag(struct phonemizer * p,
+                                  const char * w, size_t wn,
+                                  const char * ph, size_t pn,
+                                  struct entry_flags * flags) {
+    bool ph_eq_verb  = flag_is(ph, pn, "$verb");
+    bool ph_eq_verbf = flag_is(ph, pn, "$verbf");
+    bool ph_eq_nounf = flag_is(ph, pn, "$nounf");
+    bool ph_eq_pastf = flag_is(ph, pn, "$pastf");
+    bool ph_eq_u     = flag_is(ph, pn, "$u");
+    if (flag_is(ph, pn, "$abbrev")) { set_add(&p->abbrev_words, w, wn); }
+    if (flag_is_alt_n(ph, pn)) {
+        imap_or(&p->word_alt_flags, w, wn, 1 << (ph[4] - '1'));
+    }
+    if (ph_eq_verb || ph_eq_verbf || ph_eq_nounf
+        || ph_eq_pastf || flag_is(ph, pn, "$only")) {
+        flags->grammar = true;
+    }
+    if (ph_eq_pastf) { flags->pastf = true; }
+    if (ph_eq_nounf) { flags->nounf = true; }
+    if (ph_eq_verbf) { flags->verbf = true; }
+    if (ph_eq_u || flag_is(ph, pn, "$u+")) {
+        set_add(&p->unstressed_words, w, wn);
+    }
+    if (ph_eq_u)    { flags->grammar = true; }
+    if (ph_eq_verb) { flags->verb    = true; }
+}
+
 // Per-entry flag scanner. Reads parts[2..] + phonemes_str (parts[1])
 // and side-effects unstressed_words / u_plus_secondary_words /
 // unstressend_words / abbrev_words / word_alt_flags. Populates
 // `*flags` with the per-entry bits.
+
 static void parse_entry_flags(struct phonemizer * p,
                               const struct charsv * parts,
                               const char * w, size_t wn,
@@ -1401,101 +1600,20 @@ static void parse_entry_flags(struct phonemizer * p,
         const struct chars * fl = &parts->data[fi];
         const char * fd = fl->data;
         size_t fc = fl->count;
-        bool eq_noun  = fc == 5 && memcmp(fd, "$noun",  5) == 0;
-        bool eq_verb  = fc == 5 && memcmp(fd, "$verb",  5) == 0;
-        bool eq_past  = fc == 5 && memcmp(fd, "$past",  5) == 0;
-        bool eq_pastf = fc == 6 && memcmp(fd, "$pastf", 6) == 0;
-        bool eq_nounf = fc == 6 && memcmp(fd, "$nounf", 6) == 0;
-        bool eq_verbf = fc == 6 && memcmp(fd, "$verbf", 6) == 0;
-        bool eq_atend = fc == 6 && memcmp(fd, "$atend", 6) == 0;
-        bool eq_allcaps  = fc == 8 && memcmp(fd, "$allcaps",  8) == 0;
-        bool eq_sentence = fc == 9 && memcmp(fd, "$sentence", 9) == 0;
-        bool eq_capital = fc == 8 && memcmp(fd, "$capital", 8) == 0;
-        bool eq_atstart = fc == 8 && memcmp(fd, "$atstart", 8) == 0;
-        bool eq_strend2 = fc == 8 && memcmp(fd, "$strend2", 8) == 0;
-        bool eq_alt2    = fc == 5 && memcmp(fd, "$alt2",    5) == 0;
-        bool eq_alt3    = fc == 5 && memcmp(fd, "$alt3",    5) == 0;
-        bool eq_only    = fc == 5 && memcmp(fd, "$only",    5) == 0;
-        bool eq_onlys   = fc == 6 && memcmp(fd, "$onlys",   6) == 0;
-        bool eq_u2      = fc == 3 && memcmp(fd, "$u2",      3) == 0;
-        bool eq_uplus   = fc == 3 && memcmp(fd, "$u+",      3) == 0;
-        bool eq_u       = fc == 2 && memcmp(fd, "$u",       2) == 0;
-        bool eq_unstressend = fc == 12
-            && memcmp(fd, "$unstressend", 12) == 0;
-        bool eq_abbrev  = fc == 7 && memcmp(fd, "$abbrev", 7) == 0;
-        bool is_altN = fc == 5 && fd[0] == '$' && fd[1] == 'a'
-                    && fd[2] == 'l' && fd[3] == 't'
-                    && fd[4] >= '1' && fd[4] <= '6';
-        if (eq_noun)  { flags->noun = true; }
-        if (eq_verb)  { flags->verb = true; flags->grammar = true; }
-        if (eq_past)  { flags->past = true; }
-        if (eq_pastf) { flags->pastf = true; }
-        if (eq_nounf) { flags->nounf = true; flags->grammar = true; }
-        if (eq_verbf) { flags->verbf = true; flags->grammar = true; }
-        if (eq_atend || eq_allcaps || eq_sentence) { flags->atend = true; }
-        if (eq_capital) { flags->capital = true; }
-        if (eq_atstart) { flags->atstart = true; }
-        if (eq_verbf || eq_strend2 || eq_alt2 || eq_alt3 || eq_only) {
-            flags->grammar = true;
-        }
-        if (eq_only)  { flags->only = true; }
-        if (eq_onlys) { flags->onlys = true; }
-        if (eq_strend2) { flags->strend2 = true; }
-        if (eq_u2) { flags->u2 = true; }
-        if (eq_uplus) {
-            set_add(&p->unstressed_words, w, wn);
-            bool has_comma = memchr(ph, ',', pn) != NULL;
-            bool has_prime = memchr(ph, '\'', pn) != NULL;
-            if (has_comma && !has_prime) {
-                set_add(&p->u_plus_secondary_words, w, wn);
-            }
-        }
-        if (eq_u) { set_add(&p->unstressed_words, w, wn); }
-        if (eq_unstressend) { set_add(&p->unstressend_words, w, wn); }
-        if (eq_abbrev) { set_add(&p->abbrev_words, w, wn); }
-        if (is_altN) {
-            imap_or(&p->word_alt_flags, w, wn, 1 << (fd[4] - '1'));
-        }
-        if (flags->stress_n == 0) {
-            flags->stress_n = parse_stress_n(fd, fc);
-        }
+        entry_flag_pos_bits(fd, fc, flags);
+        entry_flag_context_bits(fd, fc, flags);
+        entry_flag_variant_bits(fd, fc, flags);
+        entry_flag_sets(p, fd, fc, w, wn, ph, pn);
     }
-    // phonemes_str-as-flag fallback (e.g. "gi $abbrev" pattern).
-    bool ph_eq_abbrev = pn == 7 && memcmp(ph, "$abbrev", 7) == 0;
-    bool ph_eq_verb   = pn == 5 && memcmp(ph, "$verb",   5) == 0;
-    bool ph_eq_verbf  = pn == 6 && memcmp(ph, "$verbf",  6) == 0;
-    bool ph_eq_nounf  = pn == 6 && memcmp(ph, "$nounf",  6) == 0;
-    bool ph_eq_pastf  = pn == 6 && memcmp(ph, "$pastf",  6) == 0;
-    bool ph_eq_only   = pn == 5 && memcmp(ph, "$only",   5) == 0;
-    bool ph_eq_u      = pn == 2 && memcmp(ph, "$u",      2) == 0;
-    bool ph_eq_uplus  = pn == 3 && memcmp(ph, "$u+",     3) == 0;
-    bool ph_is_altN = pn == 5 && ph[0] == '$' && ph[1] == 'a'
-                   && ph[2] == 'l' && ph[3] == 't'
-                   && ph[4] >= '1' && ph[4] <= '6';
-    if (ph_eq_abbrev) { set_add(&p->abbrev_words, w, wn); }
-    if (ph_is_altN) {
-        imap_or(&p->word_alt_flags, w, wn, 1 << (ph[4] - '1'));
-    }
-    if (ph_eq_verb || ph_eq_verbf || ph_eq_nounf
-        || ph_eq_pastf || ph_eq_only) {
-        flags->grammar = true;
-    }
-    if (ph_eq_pastf) { flags->pastf = true; }
-    if (ph_eq_nounf) { flags->nounf = true; }
-    if (ph_eq_verbf) { flags->verbf = true; }
-    if (ph_eq_u || ph_eq_uplus) {
-        set_add(&p->unstressed_words, w, wn);
-    }
-    if (ph_eq_u)    { flags->grammar = true; }
-    if (ph_eq_verb) { flags->verb    = true; }
+    phoneme_field_as_flag(p, w, wn, ph, pn, flags);
 }
 
 // Comparator for qsort: order strpairs by .a.count descending so the
 // loader can do longest-match-first lookup on compound_prefixes.
-static int strpair_len_desc(const void * pa, const void * pb) {
+static int32_t strpair_len_desc(const void * pa, const void * pb) {
     const struct strpair * a = pa;
     const struct strpair * b = pb;
-    int r = 0;
+    int32_t r = 0;
     if (a->a.count < b->a.count) { r = 1; }
     else if (a->a.count > b->a.count) { r = -1; }
     return r;
@@ -1503,6 +1621,67 @@ static int strpair_len_desc(const void * pa, const void * pb) {
 
 // Load the en_list dictionary file. Returns true on success. On
 // failure writes the error message to p->err and returns false.
+// Strips any leading dialect condition from the line and reports
+// whether the entry still applies to this dialect.
+
+static bool dialect_condition_applies(struct chars * line,
+                                      bool is_en_us,
+                                      int32_t * dialect_cond) {
+    bool cond_negated = false;
+    struct chars after_dialect = {0};
+    parse_leading_dialect(line->data, line->count, dialect_cond,
+                          &cond_negated, &after_dialect);
+    line->count = 0;
+    chars_put(line, after_dialect.data, after_dialect.count);
+    chars_free(&after_dialect);
+    bool applies = true;
+    if (*dialect_cond != 0) {
+        bool match = (*dialect_cond == 3 || *dialect_cond == 6)
+                   && is_en_us;
+        applies = cond_negated ? !match : match;
+    }
+    return applies;
+}
+
+static void store_dictionary_line(struct phonemizer * p,
+                                  const struct chars * line,
+                                  int32_t dialect_cond) {
+    struct charsv parts = {0};
+    split_ws(line->data, line->count, &parts);
+    if (parts.count >= 2) {
+        const struct chars * w_part = &parts.data[0];
+        const struct chars * ph_part = &parts.data[1];
+        struct chars norm = {0};
+        to_lower(w_part->data, w_part->count, &norm);
+        struct entry_flags flags = {0};
+        parse_entry_flags(p, &parts, norm.data, norm.count,
+                          ph_part->data, ph_part->count, &flags);
+        store_dictionary_entry(p, norm.data, norm.count,
+                               ph_part->data, ph_part->count,
+                               dialect_cond, &flags);
+        chars_free(&norm);
+    }
+    charsv_clear(&parts);
+}
+
+static void load_dictionary_line(struct phonemizer * p,
+                                 const char * raw, size_t n,
+                                 bool is_en_us) {
+    struct chars line = {0};
+    strip_comment_and_trim(raw, n, &line);
+    bool live = line.count > 0;
+    if (live && parse_phrase_entry(p, line.data, line.count)) {
+        live = false;
+    }
+    int32_t dialect_cond = 0;
+    if (live) {
+        live = dialect_condition_applies(&line, is_en_us,
+                                         &dialect_cond);
+    }
+    if (live) { store_dictionary_line(p, &line, dialect_cond); }
+    chars_free(&line);
+}
+
 static bool load_dictionary(struct phonemizer * p, const char * path) {
     FILE * f = fopen(path, "r");
     bool ok = true;
@@ -1521,50 +1700,7 @@ static bool load_dictionary(struct phonemizer * p, const char * path) {
             size_t n = (size_t)n_read;
             if (n > 0 && raw[n - 1] == '\n') { n--; }
             if (n > 0 && raw[n - 1] == '\r') { n--; }
-            struct chars line = {0};
-            strip_comment_and_trim(raw, n, &line);
-            bool live = line.count > 0;
-            if (live && parse_phrase_entry(p, line.data, line.count)) {
-                live = false;
-            }
-            int dialect_cond = 0;
-            bool cond_negated = false;
-            struct chars after_dialect = {0};
-            if (live) {
-                parse_leading_dialect(line.data, line.count,
-                                      &dialect_cond, &cond_negated,
-                                      &after_dialect);
-                line.count = 0;
-                chars_put(&line, after_dialect.data, after_dialect.count);
-                if (dialect_cond != 0) {
-                    bool match = (dialect_cond == 3 || dialect_cond == 6)
-                               && is_en_us;
-                    bool applies = cond_negated ? !match : match;
-                    if (!applies) { live = false; }
-                }
-            }
-            if (live) {
-                struct charsv parts = {0};
-                split_ws(line.data, line.count, &parts);
-                if (parts.count >= 2) {
-                    const struct chars * w_part = &parts.data[0];
-                    const struct chars * ph_part = &parts.data[1];
-                    struct chars norm = {0};
-                    to_lower(w_part->data, w_part->count, &norm);
-                    struct entry_flags flags = {0};
-                    parse_entry_flags(p, &parts,
-                                      norm.data, norm.count,
-                                      ph_part->data, ph_part->count,
-                                      &flags);
-                    store_dictionary_entry(p, norm.data, norm.count,
-                                           ph_part->data, ph_part->count,
-                                           dialect_cond, &flags);
-                    chars_free(&norm);
-                }
-                charsv_clear(&parts);
-            }
-            chars_free(&after_dialect);
-            chars_free(&line);
+            load_dictionary_line(p, raw, n, is_en_us);
         }
         free(raw);
         fclose(f);
@@ -1590,7 +1726,7 @@ static bool load_dictionary(struct phonemizer * p, const char * path) {
 static void parse_lgroup_def(const char * line, size_t n,
                              struct ruleset * rs) {
     if (n >= 3 && line[1] == 'L') {
-        int id = 0;
+        int32_t id = 0;
         size_t i = 2;
         while (i < n && isdigit((unsigned char)line[i])) {
             id = id * 10 + (line[i] - '0');
@@ -1642,37 +1778,53 @@ static void detect_prefix_marker(struct phoneme_rule * rule) {
 // Detect 'S<N>[flags]' RULE_ENDING marker in the rule's right
 // context. 'S' (not preceded by 'L') begins a suffix directive:
 // <N> chars to strip + flag letters i/m/v/e/d/q/p.
+// The letter flags that may follow an "Sn" suffix marker.
+
+static int32_t suffix_flag_bit(char fc) {
+    static const int32_t SUFX_I_BIT = 0x200;
+    static const int32_t SUFX_M_BIT = 0x80000;
+    static const int32_t SUFX_V_BIT = 0x800;
+    static const int32_t SUFX_E_BIT = 0x100;
+    static const int32_t SUFX_D_BIT = 0x1000;
+    static const int32_t SUFX_Q_BIT = 0x4000;
+    static const int32_t SUFX_P_BIT = 0x400;
+    int32_t bit = 0;
+    if      (fc == 'i') { bit = SUFX_I_BIT; }
+    else if (fc == 'm') { bit = SUFX_M_BIT; }
+    else if (fc == 'v') { bit = SUFX_V_BIT; }
+    else if (fc == 'e') { bit = SUFX_E_BIT; }
+    else if (fc == 'd') { bit = SUFX_D_BIT; }
+    else if (fc == 'q') { bit = SUFX_Q_BIT; }
+    else if (fc == 'p') { bit = SUFX_P_BIT; }
+    return bit;
+}
+
+// Reads the digits then the letter flags of an "Sn<flags>" marker
+// starting just past the 'S'. Returns the strip length.
+
+static int32_t parse_suffix_marker(const struct chars * rc, size_t k,
+                                   int32_t * out_flags) {
+    size_t k2 = k + 1;
+    int32_t n = 0;
+    int32_t sflags = 0;
+    while (k2 < rc->count && isdigit((unsigned char)rc->data[k2])) {
+        n = n * 10 + (rc->data[k2] - '0');
+        k2++;
+    }
+    while (k2 < rc->count && isalpha((unsigned char)rc->data[k2])) {
+        sflags |= suffix_flag_bit(rc->data[k2]);
+        k2++;
+    }
+    *out_flags = sflags;
+    return n;
+}
+
 static void detect_suffix_marker(struct phoneme_rule * rule) {
-    static const int SUFX_I_BIT = 0x200;
-    static const int SUFX_M_BIT = 0x80000;
-    static const int SUFX_V_BIT = 0x800;
-    static const int SUFX_E_BIT = 0x100;
-    static const int SUFX_D_BIT = 0x1000;
-    static const int SUFX_Q_BIT = 0x4000;
-    static const int SUFX_P_BIT = 0x400;
     const struct chars * rc = &rule->right_ctx;
     for (size_t k = 0; k < rc->count && !rule->is_suffix; k++) {
         if (rc->data[k] == 'S' && (k == 0 || rc->data[k - 1] != 'L')) {
-            size_t k2 = k + 1;
-            int n = 0;
-            int sflags = 0;
-            while (k2 < rc->count
-                   && isdigit((unsigned char)rc->data[k2])) {
-                n = n * 10 + (rc->data[k2] - '0');
-                k2++;
-            }
-            while (k2 < rc->count
-                   && isalpha((unsigned char)rc->data[k2])) {
-                char fc = rc->data[k2];
-                k2++;
-                if      (fc == 'i') { sflags |= SUFX_I_BIT; }
-                else if (fc == 'm') { sflags |= SUFX_M_BIT; }
-                else if (fc == 'v') { sflags |= SUFX_V_BIT; }
-                else if (fc == 'e') { sflags |= SUFX_E_BIT; }
-                else if (fc == 'd') { sflags |= SUFX_D_BIT; }
-                else if (fc == 'q') { sflags |= SUFX_Q_BIT; }
-                else if (fc == 'p') { sflags |= SUFX_P_BIT; }
-            }
+            int32_t sflags = 0;
+            int32_t n = parse_suffix_marker(rc, k, &sflags);
             if (n > 0) {
                 rule->is_suffix = true;
                 rule->suffix_strip_len = n;
@@ -1682,8 +1834,159 @@ static void detect_suffix_marker(struct phoneme_rule * rule) {
     }
 }
 
+// Byte length of `raw[0..n)` with the line terminator removed.
+
+static size_t line_len_without_eol(const char * raw, size_t n) {
+    if (n > 0 && raw[n - 1] == '\n') { n--; }
+    if (n > 0 && raw[n - 1] == '\r') { n--; }
+    return n;
+}
+
+// ".LNN" / ".replace" / ".group X". Returns true iff the line was a
+// directive and is therefore consumed.
+
+static bool parse_rules_directive(struct phonemizer * p,
+                                  const struct chars * line,
+                                  struct chars * current_group,
+                                  bool * in_replace_section) {
+    bool consumed;
+    if (line->data[0] != '.') {
+        consumed = false;
+    } else if (line->count >= 2 && line->data[1] == 'L') {
+        parse_lgroup_def(line->data, line->count, &p->rules);
+        consumed = true;
+    } else if (line->count == 8 && memcmp(line->data, ".replace", 8) == 0) {
+        *in_replace_section = true;
+        current_group->count = 0;
+        if (current_group->data != NULL) {
+            current_group->data[0] = '\0';
+        }
+        consumed = true;
+    } else if (line->count >= 6 && memcmp(line->data, ".group", 6) == 0) {
+        *in_replace_section = false;
+        struct chars rest = {0};
+        trim(line->data + 6, line->count - 6, &rest);
+        current_group->count = 0;
+        chars_put(current_group, rest.data, rest.count);
+        chars_free(&rest);
+        consumed = true;
+    } else {
+        consumed = false;
+    }
+    return consumed;
+}
+
+// A ".replace" body line: "from to", extra fields ignored.
+
+static void parse_replace_line(struct phonemizer * p,
+                               const struct chars * line) {
+    struct charsv parts = {0};
+    split_ws(line->data, line->count, &parts);
+    if (parts.count >= 2) {
+        struct replace_rule rr = {0};
+        chars_put(&rr.from, parts.data[0].data, parts.data[0].count);
+        chars_put(&rr.to,   parts.data[1].data, parts.data[1].count);
+        replaces_put(&p->rules.replacements, rr);
+    }
+    charsv_clear(&parts);
+}
+
+// "left) match (right phonemes", each part optional. An absent match
+// string means the rule matches the group letter itself.
+
+static void build_rule_fields(const struct charsv * tokens,
+                              const struct chars * current_group,
+                              struct phoneme_rule * rule) {
+    size_t ti = 0;
+    if (ti < tokens->count && tokens->data[ti].count > 0
+        && tokens->data[ti].data[tokens->data[ti].count - 1] == ')') {
+        const struct chars * t = &tokens->data[ti];
+        chars_put(&rule->left_ctx, t->data, t->count - 1);
+        ti++;
+    }
+    if (ti < tokens->count && tokens->data[ti].count > 0
+        && tokens->data[ti].data[0] != '(') {
+        const struct chars * t = &tokens->data[ti];
+        chars_put(&rule->match, t->data, t->count);
+        ti++;
+    } else {
+        chars_put(&rule->match, current_group->data,
+                  current_group->count);
+    }
+    if (ti < tokens->count && tokens->data[ti].count > 0
+        && tokens->data[ti].data[0] == '(') {
+        const struct chars * t = &tokens->data[ti];
+        chars_put(&rule->right_ctx, t->data + 1, t->count - 1);
+        ti++;
+    }
+    for (size_t j = ti; j < tokens->count; j++) {
+        chars_put(&rule->phonemes, tokens->data[j].data,
+                  tokens->data[j].count);
+    }
+}
+
+// A rule whose phonemes are a bare flag, and one with nothing to match
+// on, are dropped rather than stored.
+
+static void store_rule_in_group(struct phonemizer * p,
+                                const struct chars * current_group,
+                                struct phoneme_rule * rule) {
+    bool flag_only = rule->phonemes.count > 0
+        && rule->phonemes.data[0] == '$';
+    bool match_empty = rule->match.count == 0;
+    if (!flag_only && !match_empty) {
+        detect_prefix_marker(rule);
+        detect_suffix_marker(rule);
+        struct chars view = chars_view(current_group->data,
+                                       current_group->count);
+        struct rules * rvec = map_get(&p->rules.rule_groups, &view);
+        if (rvec == NULL) {
+            struct rules empty = {0};
+            rvec = map_put(&p->rules.rule_groups, &view, &empty);
+        }
+        rules_put(rvec, *rule);
+        // rule heap moved into the vec; reset.
+        *rule = (struct phoneme_rule){0};
+    } else {
+        chars_free(&rule->left_ctx);
+        chars_free(&rule->match);
+        chars_free(&rule->right_ctx);
+        chars_free(&rule->phonemes);
+    }
+}
+
+static void parse_rule_line(struct phonemizer * p,
+                            const struct chars * line,
+                            const struct chars * current_group,
+                            bool is_en_us) {
+    int32_t dialect_cond = 0;
+    bool cond_negated = false;
+    struct chars rule_line = {0};
+    parse_leading_dialect(line->data, line->count,
+                          &dialect_cond, &cond_negated, &rule_line);
+    bool applies = true;
+    if (dialect_cond != 0) {
+        bool match = (dialect_cond == 3) && is_en_us;
+        applies = cond_negated ? !match : match;
+    }
+    if (applies) {
+        struct charsv tokens = {0};
+        split_ws(rule_line.data, rule_line.count, &tokens);
+        if (tokens.count > 0) {
+            struct phoneme_rule rule = {0};
+            rule.condition = dialect_cond;
+            rule.condition_negated = cond_negated;
+            build_rule_fields(&tokens, current_group, &rule);
+            store_rule_in_group(p, current_group, &rule);
+        }
+        charsv_clear(&tokens);
+    }
+    chars_free(&rule_line);
+}
+
 // Load the en_rules file. Returns true on success; on failure
 // writes the message to p->err and returns false.
+
 static bool load_rules(struct phonemizer * p, const char * path) {
     FILE * f = fopen(path, "r");
     bool ok = true;
@@ -1701,138 +2004,21 @@ static bool load_rules(struct phonemizer * p, const char * path) {
         size_t cap = 0;
         ssize_t n_read = 0;
         while ((n_read = getline(&raw, &cap, f)) != -1) {
-            size_t n = (size_t)n_read;
-            if (n > 0 && raw[n - 1] == '\n') { n--; }
-            if (n > 0 && raw[n - 1] == '\r') { n--; }
+            size_t n = line_len_without_eol(raw, (size_t)n_read);
             struct chars line = {0};
             strip_comment_and_trim(raw, n, &line);
             bool live = line.count > 0;
-            // Directive lines (".LNN", ".replace", ".group X")
-            if (live && line.data[0] == '.') {
-                if (line.count >= 2 && line.data[1] == 'L') {
-                    parse_lgroup_def(line.data, line.count, &p->rules);
-                    live = false;
-                } else if (line.count == 8
-                    && memcmp(line.data, ".replace", 8) == 0) {
-                    in_replace_section = true;
-                    current_group.count = 0;
-                    if (current_group.data != NULL) {
-                        current_group.data[0] = '\0';
-                    }
-                    live = false;
-                } else if (line.count >= 6
-                    && memcmp(line.data, ".group", 6) == 0) {
-                    in_replace_section = false;
-                    struct chars rest = {0};
-                    trim(line.data + 6, line.count - 6, &rest);
-                    current_group.count = 0;
-                    chars_put(&current_group, rest.data, rest.count);
-                    chars_free(&rest);
-                    live = false;
-                }
+            if (live && parse_rules_directive(p, &line, &current_group,
+                                              &in_replace_section)) {
+                live = false;
             }
             if (live && in_replace_section) {
-                struct charsv parts = {0};
-                split_ws(line.data, line.count, &parts);
-                if (parts.count >= 2) {
-                    struct replace_rule rr = {0};
-                    chars_put(&rr.from, parts.data[0].data,
-                              parts.data[0].count);
-                    chars_put(&rr.to,   parts.data[1].data,
-                              parts.data[1].count);
-                    replaces_put(&p->rules.replacements, rr);
-                }
-                charsv_clear(&parts);
+                parse_replace_line(p, &line);
                 live = false;
             }
             if (live && current_group.count == 0) { live = false; }
             if (live) {
-                int dialect_cond = 0;
-                bool cond_negated = false;
-                struct chars rule_line = {0};
-                parse_leading_dialect(line.data, line.count,
-                                      &dialect_cond, &cond_negated,
-                                      &rule_line);
-                bool applies = true;
-                if (dialect_cond != 0) {
-                    bool match = (dialect_cond == 3) && is_en_us;
-                    applies = cond_negated ? !match : match;
-                }
-                if (applies) {
-                    struct charsv tokens = {0};
-                    split_ws(rule_line.data, rule_line.count, &tokens);
-                    if (tokens.count > 0) {
-                        struct phoneme_rule rule = {0};
-                        rule.condition = dialect_cond;
-                        rule.condition_negated = cond_negated;
-                        size_t ti = 0;
-                        // Left context: token ending with ')'.
-                        if (ti < tokens.count
-                            && tokens.data[ti].count > 0
-                            && tokens.data[ti]
-                                .data[tokens.data[ti].count - 1] == ')') {
-                            const struct chars * t = &tokens.data[ti];
-                            chars_put(&rule.left_ctx, t->data,
-                                      t->count - 1);
-                            ti++;
-                        }
-                        // Match string: next token not starting '('.
-                        if (ti < tokens.count
-                            && tokens.data[ti].count > 0
-                            && tokens.data[ti].data[0] != '(') {
-                            const struct chars * t = &tokens.data[ti];
-                            chars_put(&rule.match, t->data, t->count);
-                            ti++;
-                        } else {
-                            chars_put(&rule.match,
-                                      current_group.data,
-                                      current_group.count);
-                        }
-                        // Right context: token starting with '('.
-                        if (ti < tokens.count
-                            && tokens.data[ti].count > 0
-                            && tokens.data[ti].data[0] == '(') {
-                            const struct chars * t = &tokens.data[ti];
-                            chars_put(&rule.right_ctx,
-                                      t->data + 1, t->count - 1);
-                            ti++;
-                        }
-                        // Phonemes: rest of tokens, joined (no sep).
-                        for (size_t j = ti; j < tokens.count; j++) {
-                            chars_put(&rule.phonemes,
-                                      tokens.data[j].data,
-                                      tokens.data[j].count);
-                        }
-                        bool flag_only = rule.phonemes.count > 0
-                            && rule.phonemes.data[0] == '$';
-                        bool match_empty = rule.match.count == 0;
-                        if (!flag_only && !match_empty) {
-                            detect_prefix_marker(&rule);
-                            detect_suffix_marker(&rule);
-                            // Get-or-create rules vec for this group.
-                            struct chars view = chars_view(
-                                current_group.data,
-                                current_group.count);
-                            struct rules * rvec = map_get(
-                                &p->rules.rule_groups, &view);
-                            if (rvec == NULL) {
-                                struct rules empty = {0};
-                                rvec = map_put(&p->rules.rule_groups,
-                                               &view, &empty);
-                            }
-                            rules_put(rvec, rule);
-                            // rule heap moved into the vec; reset.
-                            rule = (struct phoneme_rule){0};
-                        } else {
-                            chars_free(&rule.left_ctx);
-                            chars_free(&rule.match);
-                            chars_free(&rule.right_ctx);
-                            chars_free(&rule.phonemes);
-                        }
-                    }
-                    charsv_clear(&tokens);
-                }
-                chars_free(&rule_line);
+                parse_rule_line(p, &line, &current_group, is_en_us);
             }
             chars_free(&line);
         }
@@ -1897,16 +2083,16 @@ static void apply_replacements(struct chars * out,
 // Check if `word[pos..)` starts with any item in `lgroup`. Returns
 // the longest matching item length, or 0 if no match. Lower-case
 // comparison on both sides (matches the .cpp).
-static int match_lgroup_at(const struct charsv * lgroup,
-                           const char * word, size_t wn, int pos) {
-    int best = 0;
-    if (pos >= 0 && pos < (int)wn) {
+static int32_t match_lgroup_at(const struct charsv * lgroup,
+                               const char * word, size_t wn, int32_t pos) {
+    int32_t best = 0;
+    if (pos >= 0 && pos < (int32_t)wn) {
         for (size_t i = 0; i < lgroup->count; i++) {
             const struct chars * item = &lgroup->data[i];
-            int ilen = (int)item->count;
-            if (ilen > 0 && pos + ilen <= (int)wn) {
+            int32_t ilen = (int32_t)item->count;
+            if (ilen > 0 && pos + ilen <= (int32_t)wn) {
                 bool ok = true;
-                for (int j = 0; j < ilen && ok; j++) {
+                for (int32_t j = 0; j < ilen && ok; j++) {
                     char wc = (char)tolower((unsigned char)word[pos + j]);
                     char ic = (char)tolower((unsigned char)item->data[j]);
                     if (wc != ic) { ok = false; }
@@ -1924,7 +2110,7 @@ static int match_lgroup_at(const struct charsv * lgroup,
 
 // Result of a left/right context match: score iff `matched` is true.
 struct ctx_score {
-    int  score;
+    int32_t score;
     bool matched;
 };
 
@@ -1933,9 +2119,9 @@ struct ctx_score {
 // unknown group.
 static bool match_group(const struct letter_groups * groups,
                         char g, const char * word,
-                        size_t wn, int pos) {
+                        size_t wn, int32_t pos) {
     bool r = false;
-    if (pos >= 0 && pos < (int)wn) {
+    if (pos >= 0 && pos < (int32_t)wn) {
         char c = (char)tolower((unsigned char)word[pos]);
         unsigned char u = (unsigned char)c;
         switch (g) {
@@ -1969,8 +2155,56 @@ static const char * const STRESSED_MC[] = {
     NULL
 };
 
-static bool stressed_in_phonemes(const char * ph, size_t pn) {
+// The first STRESSED_MC entry matching at pi, or the single byte
+// there when none matches.
+
+static void find_stressed_code(const char * ph, size_t pn, size_t pi,
+                               const char ** out_code,
+                               size_t * out_len) {
+    const char * code = NULL;
+    size_t code_len = 0;
+    for (int32_t mi = 0;
+         STRESSED_MC[mi] != NULL && code == NULL; mi++) {
+        size_t mcl = strlen(STRESSED_MC[mi]);
+        if (pi + mcl <= pn
+            && memcmp(ph + pi, STRESSED_MC[mi], mcl) == 0) {
+            code = STRESSED_MC[mi];
+            code_len = mcl;
+        }
+    }
+    if (code == NULL) {
+        code = ph + pi;
+        code_len = 1;
+    }
+    *out_code = code;
+    *out_len = code_len;
+}
+
+// Schwa, bare i and the reduced two-char vowels never carry stress.
+
+static bool code_is_inherently_unstressed(const char * code,
+                                          size_t code_len) {
+    return code[0] == '@'
+        || (code_len == 1 && code[0] == 'i')
+        || (code_len == 2 && code[0] == 'a' && code[1] == '#')
+        || (code_len == 2 && code[0] == 'I' && code[1] == '#')
+        || (code_len == 2 && code[0] == 'I' && code[1] == '2');
+}
+
+// A vowel code silenced neither by a preceding marker nor by its own
+// quality.
+
+static bool code_carries_stress(const char * code, size_t code_len,
+                                bool prev_unstressed) {
     static const char VOWEL_PH_STRESSABLE[] = "aAeEiIoOuUV03";
+    bool is_vowel = code_len > 0
+        && strchr(VOWEL_PH_STRESSABLE, code[0]) != NULL;
+    return is_vowel
+        && !code_is_inherently_unstressed(code, code_len)
+        && !prev_unstressed;
+}
+
+static bool stressed_in_phonemes(const char * ph, size_t pn) {
     bool found = false;
     size_t pi = 0;
     bool prev_unstressed = false;
@@ -1985,31 +2219,9 @@ static bool stressed_in_phonemes(const char * ph, size_t pn) {
         } else {
             const char * code = NULL;
             size_t code_len = 0;
-            for (int mi = 0;
-                 STRESSED_MC[mi] != NULL && code == NULL; mi++) {
-                size_t mcl = strlen(STRESSED_MC[mi]);
-                if (pi + mcl <= pn
-                    && memcmp(ph + pi, STRESSED_MC[mi], mcl) == 0) {
-                    code = STRESSED_MC[mi];
-                    code_len = mcl;
-                }
-            }
-            if (code == NULL) {
-                code = ph + pi;
-                code_len = 1;
-            }
-            bool is_vowel = code_len > 0
-                && strchr(VOWEL_PH_STRESSABLE, code[0]) != NULL;
-            if (is_vowel) {
-                bool inherently_unstressed = code[0] == '@'
-                    || (code_len == 1 && code[0] == 'i')
-                    || (code_len == 2 && code[0] == 'a' && code[1] == '#')
-                    || (code_len == 2 && code[0] == 'I' && code[1] == '#')
-                    || (code_len == 2 && code[0] == 'I' && code[1] == '2');
-                if (!inherently_unstressed && !prev_unstressed) {
-                    found = true;
-                }
-            }
+            find_stressed_code(ph, pn, pi, &code, &code_len);
+            found = code_carries_stress(code, code_len,
+                                        prev_unstressed);
             if (!found) {
                 prev_unstressed = false;
                 pi += code_len;
@@ -2019,228 +2231,312 @@ static bool stressed_in_phonemes(const char * ph, size_t pn) {
     return found;
 }
 
+static bool is_letter_group_ref(char cc) {
+    return cc == 'A' || cc == 'B' || cc == 'C' || cc == 'F'
+        || cc == 'G' || cc == 'H' || cc == 'Y';
+}
+
+// Cursor and accumulators shared by the left-context token handlers.
+// `ok` is the loop predicate: a token that fails the match clears it
+// and the scan stops where it stands.
+struct lctx_scan {
+    int32_t score;
+    int32_t word_pos;
+    int32_t ci;
+    int32_t distance_left;
+    char prev_char;
+    bool ok;
+};
+
+static void lctx_advance(struct lctx_scan * s, int32_t pts) {
+    s->distance_left += 2;
+    if (s->distance_left > 19) { s->distance_left = 19; }
+    s->score += pts - s->distance_left;
+}
+
+static void lctx_word_bound(struct lctx_scan * s) {
+    if (s->word_pos >= 0) {
+        s->ok = false;
+    } else {
+        s->ci--;
+        s->score += 4;
+    }
+}
+
+// With no phonemes yet, any vowel to the left counts as the stress.
+
+static void lctx_stressed(struct lctx_scan * s, const char * word,
+                          int32_t pos, const char * ph_so_far,
+                          size_t ph_n) {
+    bool found_stressed = false;
+    if (ph_n > 0) {
+        found_stressed = stressed_in_phonemes(ph_so_far, ph_n);
+    } else {
+        for (int32_t k = 0; k < pos && !found_stressed; k++) {
+            if (is_vowel_letter(word[k])) { found_stressed = true; }
+        }
+    }
+    if (!found_stressed) {
+        s->ok = false;
+    } else {
+        s->ci--;
+        s->score += 19;
+    }
+}
+
+static int32_t count_left_vowel_groups(const char * word, int32_t pos,
+                                       const char * ph_so_far,
+                                       size_t ph_n) {
+    static const char VOWEL_PH[] = "aAeEIiOUVu03@o";
+    int32_t vowel_groups = 0;
+    bool in_v2 = false;
+    if (ph_n > 0) {
+        for (size_t k = 0; k < ph_n; k++) {
+            bool v = strchr(VOWEL_PH, ph_so_far[k]) != NULL;
+            if (v && !in_v2) {
+                vowel_groups++;
+                in_v2 = true;
+            } else if (!v) {
+                in_v2 = false;
+            }
+        }
+    } else {
+        for (int32_t wp = 0; wp < pos; wp++) {
+            bool v = is_vowel_letter(word[wp]);
+            if (v && !in_v2) {
+                vowel_groups++;
+                in_v2 = true;
+            } else if (!v) {
+                in_v2 = false;
+            }
+        }
+    }
+    return vowel_groups;
+}
+
+// '@' reads the distance without bumping it -- it scores a syllable
+// count, it does not consume a letter.
+
+static void lctx_syllables(struct lctx_scan * s, const char * ctx_str,
+                           const char * word, int32_t pos,
+                           const char * ph_so_far, size_t ph_n) {
+    int32_t syllable_count = 0;
+    while (s->ci >= 0 && ctx_str[s->ci] == '@') {
+        syllable_count++;
+        s->ci--;
+    }
+    int32_t vowel_groups = count_left_vowel_groups(word, pos,
+                                               ph_so_far, ph_n);
+    if (syllable_count > vowel_groups) {
+        s->ok = false;
+    } else {
+        int32_t dist = s->distance_left + 2;
+        if (dist > 19) { dist = 19; }
+        s->score += 18 + syllable_count - dist;
+    }
+}
+
+static void lctx_no_vowels_left(struct lctx_scan * s,
+                                const char * word) {
+    bool found_vowel = false;
+    for (int32_t k = 0; k <= s->word_pos && !found_vowel; k++) {
+        if (is_vowel_letter(word[k])) { found_vowel = true; }
+    }
+    if (found_vowel) {
+        s->ok = false;
+    } else {
+        s->ci--;
+        s->score += 3;
+    }
+}
+
+static void lctx_double_letter(struct lctx_scan * s,
+                               const char * word) {
+    if (s->word_pos < 0) {
+        s->ok = false;
+    } else {
+        char cur = (char)tolower((unsigned char)word[s->word_pos]);
+        char nxt = (char)tolower((unsigned char)s->prev_char);
+        if (cur != nxt) {
+            s->ok = false;
+        } else {
+            s->prev_char = word[s->word_pos];
+            s->word_pos--;
+            s->ci--;
+            lctx_advance(s, 21);
+        }
+    }
+}
+
+static void lctx_letter_group(struct lctx_scan * s, char cc,
+                              const char * word, size_t wn,
+                              const struct ruleset * rs) {
+    if (!match_group(&rs->groups, cc, word, wn, s->word_pos)) {
+        s->ok = false;
+    } else {
+        int32_t lg_pts = (cc == 'C') ? 19 : 20;
+        s->prev_char = word[s->word_pos];
+        s->word_pos--;
+        s->ci--;
+        lctx_advance(s, lg_pts);
+    }
+}
+
+static void lctx_non_vowel(struct lctx_scan * s, const char * word) {
+    if (s->word_pos < 0 || is_vowel_letter(word[s->word_pos])) {
+        s->ok = false;
+    } else {
+        s->prev_char = word[s->word_pos];
+        s->word_pos--;
+        s->ci--;
+        lctx_advance(s, 20);
+    }
+}
+
+static void lctx_digit_letter(struct lctx_scan * s,
+                              const char * word) {
+    if (s->word_pos < 0
+        || !isdigit((unsigned char)word[s->word_pos])) {
+        s->ok = false;
+    } else {
+        s->prev_char = word[s->word_pos];
+        s->word_pos--;
+        s->ci--;
+        lctx_advance(s, 21);
+    }
+}
+
+static void lctx_non_alpha(struct lctx_scan * s, const char * word) {
+    if (s->word_pos < 0
+        || isalpha((unsigned char)word[s->word_pos])) {
+        s->ok = false;
+    } else {
+        s->prev_char = word[s->word_pos];
+        s->word_pos--;
+        s->ci--;
+        lctx_advance(s, 21);
+    }
+}
+
+// Read right-to-left, an L-group arrives as its digits first: "L12"
+// reaches this handler at the '2'. Digits with no 'L' behind them are
+// a plain skip.
+
+static void lctx_lgroup(struct lctx_scan * s, char cc,
+                        const char * ctx_str, const char * word,
+                        size_t wn, const struct ruleset * rs) {
+    int32_t gid = cc - '0';
+    int32_t ci2 = s->ci - 1;
+    if (ci2 >= 0 && ctx_str[ci2] >= '0' && ctx_str[ci2] <= '9') {
+        gid += (ctx_str[ci2] - '0') * 10;
+        ci2--;
+    }
+    if (ci2 >= 0 && ctx_str[ci2] == 'L') {
+        if (gid > 0 && gid < 100) {
+            int32_t matched = match_lgroup_at(&rs->groups.lgroups[gid],
+                                          word, wn, s->word_pos);
+            if (matched == 0) {
+                s->ok = false;
+            } else {
+                if (matched > 0) {
+                    s->prev_char = word[s->word_pos - matched + 1];
+                }
+                s->word_pos -= matched;
+                lctx_advance(s, 20);
+            }
+        }
+        s->ci = ci2 - 1;
+    } else {
+        s->ci--;
+    }
+}
+
+static void lctx_literal(struct lctx_scan * s, char cc,
+                         const char * word) {
+    if (s->word_pos < 0) {
+        s->ok = false;
+    } else {
+        char wc = (char)tolower((unsigned char)word[s->word_pos]);
+        char mc = (char)tolower((unsigned char)cc);
+        if (wc != mc) {
+            s->ok = false;
+        } else {
+            s->prev_char = word[s->word_pos];
+            s->word_pos--;
+            s->ci--;
+            lctx_advance(s, 21);
+        }
+    }
+}
+
+// Tokens that never move the word cursor. Returns false when `cc` is
+// not one of them; the two token sets are disjoint, so the split
+// preserves the original arm order.
+
+static bool lctx_boundary_token(struct lctx_scan * s, char cc,
+                                const char * ctx_str,
+                                const char * word, int32_t pos,
+                                const char * ph_so_far, size_t ph_n) {
+    bool handled = true;
+    if (cc == '_') { lctx_word_bound(s); }
+    else if (cc == '&') { lctx_stressed(s, word, pos,
+                                        ph_so_far, ph_n); }
+    else if (cc == '@') { lctx_syllables(s, ctx_str, word, pos,
+                                         ph_so_far, ph_n); }
+    else if (cc == '!') { s->ci--; }
+    else if (cc == '+') { s->score += 20; s->ci--; }
+    else if (cc == '<') { s->score -= 20; s->ci--; }
+    else if (cc == 'X') { lctx_no_vowels_left(s, word); }
+    else if (cc == 'E') { s->ok = false; }
+    else { handled = false; }
+    return handled;
+}
+
+static void lctx_consuming_token(struct lctx_scan * s, char cc,
+                                 const char * ctx_str,
+                                 const char * word, size_t wn,
+                                 const struct ruleset * rs) {
+    if (cc == '%') { lctx_double_letter(s, word); }
+    else if (is_letter_group_ref(cc)) {
+        lctx_letter_group(s, cc, word, wn, rs);
+    }
+    else if (cc == 'K') { lctx_non_vowel(s, word); }
+    else if (cc == 'D') { lctx_digit_letter(s, word); }
+    else if (cc == 'Z') { lctx_non_alpha(s, word); }
+    else if (cc >= '0' && cc <= '9') {
+        lctx_lgroup(s, cc, ctx_str, word, wn, rs);
+    }
+    else { lctx_literal(s, cc, word); }
+}
+
 // Match left context: scans ctx right-to-left starting at pos-1
 // in word. Token types: literal (case-fold), '_' word-bound, '&'
 // stressed, '@' syllable, '!' capital (skip), '%' double, '+'/'<'
 // inc/dec score, A/B/C/F/G/H/Y letter group, K not-vowel, X no-
 // vowels, D digit, Z non-alpha, LNN L-group ref, 'E' replaced-e.
-// Returns (score, matched). SESE: every former early-return
-// becomes `ok = false` and the loop's `&& ok` predicate exits.
+
 static struct ctx_score match_left_context_score(
         const char * ctx_str, size_t ctx_n,
-        const char * word, size_t wn, int pos,
+        const char * word, size_t wn, int32_t pos,
         const struct ruleset * rs,
         const char * ph_so_far, size_t ph_n) {
     struct ctx_score result = { 0, false };
-    int score = 0;
-    bool ok = true;
     assert(ctx_n > 0);
-    int word_pos = pos - 1;
-    int ci = (int)ctx_n - 1;
-    int distance_left = -2;
-    char prev_char = (pos > 0 && pos < (int)wn) ? word[pos] : 0;
-    while (ci >= 0 && ok) {
-        char cc = ctx_str[ci];
-        if (cc == '_') {
-            if (word_pos >= 0) {
-                ok = false;
-            } else {
-                ci--;
-                score += 4;
-            }
-        } else if (cc == '&') {
-            bool found_stressed = false;
-            if (ph_n > 0) {
-                found_stressed = stressed_in_phonemes(ph_so_far, ph_n);
-            } else {
-                for (int k = 0; k < pos && !found_stressed; k++) {
-                    if (is_vowel_letter(word[k])) {
-                        found_stressed = true;
-                    }
-                }
-            }
-            if (!found_stressed) {
-                ok = false;
-            } else {
-                ci--;
-                score += 19;
-            }
-        } else if (cc == '@') {
-            int syllable_count = 0;
-            while (ci >= 0 && ctx_str[ci] == '@') {
-                syllable_count++;
-                ci--;
-            }
-            int vowel_groups = 0;
-            if (ph_n > 0) {
-                static const char VOWEL_PH[] = "aAeEIiOUVu03@o";
-                bool in_v2 = false;
-                for (size_t k = 0; k < ph_n; k++) {
-                    bool v = strchr(VOWEL_PH, ph_so_far[k]) != NULL;
-                    if (v && !in_v2) {
-                        vowel_groups++;
-                        in_v2 = true;
-                    } else if (!v) {
-                        in_v2 = false;
-                    }
-                }
-            } else {
-                bool in_v2 = false;
-                for (int wp = 0; wp < pos; wp++) {
-                    bool v = is_vowel_letter(word[wp]);
-                    if (v && !in_v2) {
-                        vowel_groups++;
-                        in_v2 = true;
-                    } else if (!v) {
-                        in_v2 = false;
-                    }
-                }
-            }
-            if (syllable_count > vowel_groups) {
-                ok = false;
-            } else {
-                int dist = distance_left + 2;
-                if (dist > 19) { dist = 19; }
-                score += 18 + syllable_count - dist;
-            }
-        } else if (cc == '!') {
-            ci--;
-        } else if (cc == '%') {
-            if (word_pos < 0) {
-                ok = false;
-            } else {
-                char cur = (char)tolower((unsigned char)word[word_pos]);
-                char nxt = (char)tolower((unsigned char)prev_char);
-                if (cur != nxt) {
-                    ok = false;
-                } else {
-                    distance_left += 2;
-                    if (distance_left > 19) { distance_left = 19; }
-                    prev_char = word[word_pos];
-                    word_pos--;
-                    ci--;
-                    score += 21 - distance_left;
-                }
-            }
-        } else if (cc == '+') {
-            score += 20;
-            ci--;
-        } else if (cc == '<') {
-            score -= 20;
-            ci--;
-        } else if (cc == 'A' || cc == 'B' || cc == 'C'
-                || cc == 'F' || cc == 'G' || cc == 'H' || cc == 'Y') {
-            if (!match_group(&rs->groups, cc, word, wn, word_pos)) {
-                ok = false;
-            } else {
-                distance_left += 2;
-                if (distance_left > 19) { distance_left = 19; }
-                int lg_pts = (cc == 'C') ? 19 : 20;
-                prev_char = word[word_pos];
-                word_pos--;
-                ci--;
-                score += lg_pts - distance_left;
-            }
-        } else if (cc == 'K') {
-            if (word_pos < 0 || is_vowel_letter(word[word_pos])) {
-                ok = false;
-            } else {
-                distance_left += 2;
-                if (distance_left > 19) { distance_left = 19; }
-                prev_char = word[word_pos];
-                word_pos--;
-                ci--;
-                score += 20 - distance_left;
-            }
-        } else if (cc == 'X') {
-            bool found_vowel = false;
-            for (int k = 0; k <= word_pos && !found_vowel; k++) {
-                if (is_vowel_letter(word[k])) { found_vowel = true; }
-            }
-            if (found_vowel) {
-                ok = false;
-            } else {
-                ci--;
-                score += 3;
-            }
-        } else if (cc == 'D') {
-            if (word_pos < 0
-                || !isdigit((unsigned char)word[word_pos])) {
-                ok = false;
-            } else {
-                distance_left += 2;
-                if (distance_left > 19) { distance_left = 19; }
-                prev_char = word[word_pos];
-                word_pos--;
-                ci--;
-                score += 21 - distance_left;
-            }
-        } else if (cc == 'Z') {
-            if (word_pos < 0
-                || isalpha((unsigned char)word[word_pos])) {
-                ok = false;
-            } else {
-                distance_left += 2;
-                if (distance_left > 19) { distance_left = 19; }
-                prev_char = word[word_pos];
-                word_pos--;
-                ci--;
-                score += 21 - distance_left;
-            }
-        } else if (cc >= '0' && cc <= '9') {
-            int gid = cc - '0';
-            int ci2 = ci - 1;
-            if (ci2 >= 0
-                && ctx_str[ci2] >= '0' && ctx_str[ci2] <= '9') {
-                gid += (ctx_str[ci2] - '0') * 10;
-                ci2--;
-            }
-            if (ci2 >= 0 && ctx_str[ci2] == 'L') {
-                if (gid > 0 && gid < 100) {
-                    int matched = match_lgroup_at(
-                        &rs->groups.lgroups[gid], word, wn,
-                        word_pos);
-                    if (matched == 0) {
-                        ok = false;
-                    } else {
-                        distance_left += 2;
-                        if (distance_left > 19) {
-                            distance_left = 19;
-                        }
-                        if (matched > 0) {
-                            prev_char = word[word_pos - matched + 1];
-                        }
-                        word_pos -= matched;
-                        score += 20 - distance_left;
-                    }
-                }
-                ci = ci2 - 1;
-            } else {
-                ci--;
-            }
-        } else if (cc == 'E') {
-            ok = false;
-        } else {
-            if (word_pos < 0) {
-                ok = false;
-            } else {
-                char wc = (char)tolower((unsigned char)word[word_pos]);
-                char mc = (char)tolower((unsigned char)cc);
-                if (wc != mc) {
-                    ok = false;
-                } else {
-                    distance_left += 2;
-                    if (distance_left > 19) { distance_left = 19; }
-                    prev_char = word[word_pos];
-                    word_pos--;
-                    ci--;
-                    score += 21 - distance_left;
-                }
-            }
+    struct lctx_scan s = {0};
+    s.word_pos      = pos - 1;
+    s.ci            = (int32_t)ctx_n - 1;
+    s.distance_left = -2;
+    s.prev_char     = (pos > 0 && pos < (int32_t)wn) ? word[pos] : 0;
+    s.ok            = true;
+    while (s.ci >= 0 && s.ok) {
+        char cc = ctx_str[s.ci];
+        if (!lctx_boundary_token(&s, cc, ctx_str, word, pos,
+                                 ph_so_far, ph_n)) {
+            lctx_consuming_token(&s, cc, ctx_str, word, wn, rs);
         }
     }
-    if (ok) {
-        result.score = score;
+    if (s.ok) {
+        result.score = s.score;
         result.matched = true;
     }
     return result;
@@ -2250,11 +2546,332 @@ static struct ctx_score match_left_context_score(
 // (start position + count of chars to mark silent) on top of the
 // shared (score, matched) shape.
 struct right_ctx_score {
-    int  score;
-    int  del_fwd_start;
-    int  del_fwd_count;
+    int32_t score;
+    int32_t del_fwd_start;
+    int32_t del_fwd_count;
     bool matched;
 };
+
+// Cursor and accumulators shared by the right-context token handlers.
+struct rctx_scan {
+    int32_t score;
+    int32_t word_pos;
+    int32_t ci;
+    int32_t distance_right;
+    int32_t del_fwd_pos;
+    char prev_char;
+    bool ok;
+};
+
+// Each token consumed is worth less than the one before it, down to a
+// floor of 19 points of distance.
+
+static void rctx_advance(struct rctx_scan * s, int32_t pts) {
+    s->distance_right += 6;
+    if (s->distance_right > 19) { s->distance_right = 19; }
+    s->score += pts - s->distance_right;
+}
+
+static void rctx_word_end(struct rctx_scan * s, size_t wn) {
+    if (s->word_pos < (int32_t)wn) {
+        s->ok = false;
+    } else {
+        s->ci++;
+        rctx_advance(s, 21);
+    }
+}
+
+static void rctx_letter_group(struct rctx_scan * s, char cc,
+                              const char * word, size_t wn,
+                              const struct ruleset * rs) {
+    if (!match_group(&rs->groups, cc, word, wn, s->word_pos)) {
+        s->ok = false;
+    } else {
+        int32_t lg_pts = (cc == 'C') ? 19 : 20;
+        s->prev_char = word[s->word_pos];
+        s->word_pos++;
+        s->ci++;
+        rctx_advance(s, lg_pts);
+    }
+}
+
+// K matches a non-vowel; the null at word end is non-vowel too.
+
+static void rctx_non_vowel(struct rctx_scan * s, const char * word,
+                           size_t wn) {
+    if (s->word_pos < (int32_t)wn && is_vowel_letter(word[s->word_pos])) {
+        s->ok = false;
+    } else {
+        if (s->word_pos < (int32_t)wn) { s->prev_char = word[s->word_pos]; }
+        s->word_pos++;
+        s->ci++;
+        rctx_advance(s, 20);
+    }
+}
+
+static void rctx_no_vowels_left(struct rctx_scan * s,
+                                const char * word, size_t wn) {
+    bool found = false;
+    for (int32_t k = s->word_pos; k < (int32_t)wn && !found; k++) {
+        if (is_vowel_letter(word[k])) { found = true; }
+    }
+    if (found) {
+        s->ok = false;
+    } else {
+        s->ci++;
+        rctx_advance(s, 19);
+    }
+}
+
+static void rctx_digit_letter(struct rctx_scan * s, const char * word,
+                              size_t wn) {
+    if (s->word_pos >= (int32_t)wn
+        || !isdigit((unsigned char)word[s->word_pos])) {
+        s->ok = false;
+    } else {
+        s->prev_char = word[s->word_pos];
+        s->word_pos++;
+        s->ci++;
+        rctx_advance(s, 21);
+    }
+}
+
+static void rctx_non_alpha(struct rctx_scan * s, const char * word,
+                           size_t wn) {
+    if (s->word_pos >= (int32_t)wn
+        || isalpha((unsigned char)word[s->word_pos])) {
+        s->ok = false;
+    } else {
+        s->prev_char = word[s->word_pos];
+        s->word_pos++;
+        s->ci++;
+        rctx_advance(s, 21);
+    }
+}
+
+static void rctx_double_letter(struct rctx_scan * s, const char * word,
+                               size_t wn) {
+    if (s->word_pos >= (int32_t)wn) {
+        s->ok = false;
+    } else {
+        char cur = (char)tolower((unsigned char)word[s->word_pos]);
+        char prv = (char)tolower((unsigned char)s->prev_char);
+        if (cur != prv) {
+            s->ok = false;
+        } else {
+            s->prev_char = word[s->word_pos];
+            s->word_pos++;
+            s->ci++;
+            rctx_advance(s, 21);
+        }
+    }
+}
+
+static void rctx_syllables(struct rctx_scan * s, const char * ctx_str,
+                           int32_t clen, const char * word, size_t wn) {
+    int32_t syllable_count = 0;
+    while (s->ci < clen && ctx_str[s->ci] == '@') {
+        syllable_count++;
+        s->ci++;
+    }
+    int32_t vowel_groups = 0;
+    bool in_v = false;
+    for (int32_t wp = s->word_pos; wp < (int32_t)wn; wp++) {
+        bool v = is_vowel_letter(word[wp]);
+        if (v && !in_v) {
+            vowel_groups++;
+            in_v = true;
+        } else if (!v) {
+            in_v = false;
+        }
+    }
+    if (syllable_count > vowel_groups) {
+        s->ok = false;
+    } else {
+        rctx_advance(s, 18 + syllable_count);
+    }
+}
+
+// RULE_DEL_FWD: remember the first 'e' between the match start and the
+// cursor, for the caller to delete.
+
+static void rctx_scan_del_fwd(struct rctx_scan * s, const char * word,
+                              int32_t pos) {
+    if (s->del_fwd_pos < 0) {
+        for (int32_t sp = pos;
+             sp < s->word_pos && s->del_fwd_pos < 0; sp++) {
+            if (word[sp] == 'e') { s->del_fwd_pos = sp; }
+        }
+    }
+    s->ci++;
+}
+
+static void rctx_word_alt(struct rctx_scan * s, const char * ctx_str,
+                          int32_t clen, int32_t word_alt_flags) {
+    bool is_alt_ref = s->ci + 6 < clen && ctx_str[s->ci + 1] == 'w'
+        && ctx_str[s->ci + 2] == '_' && ctx_str[s->ci + 3] == 'a'
+        && ctx_str[s->ci + 4] == 'l' && ctx_str[s->ci + 5] == 't'
+        && ctx_str[s->ci + 6] >= '1' && ctx_str[s->ci + 6] <= '6';
+    if (!is_alt_ref) {
+        s->ok = false;
+    } else {
+        int32_t alt_n = ctx_str[s->ci + 6] - '0';
+        int32_t alt_bit = 1 << (alt_n - 1);
+        if (!(word_alt_flags & alt_bit)) {
+            s->ok = false;
+        } else {
+            s->ci += 7;
+        }
+    }
+}
+
+static void rctx_suffix_removed_cond(struct rctx_scan * s,
+                                     const char * ctx_str, int32_t clen,
+                                     bool suffix_removed) {
+    if (s->ci + 1 < clen
+        && isdigit((unsigned char)ctx_str[s->ci + 1])) {
+        s->ci += 2;
+    } else if (suffix_removed) {
+        s->ok = false;
+    } else {
+        s->score += 1;
+        s->ci++;
+    }
+}
+
+static void rctx_skip_to_space(struct rctx_scan * s,
+                               const char * ctx_str, int32_t clen) {
+    while (s->ci < clen && !isspace((unsigned char)ctx_str[s->ci])) {
+        s->ci++;
+    }
+}
+
+// "S<N>[flags]" is read by the caller, not scored here.
+
+static void rctx_suffix_directive(struct rctx_scan * s,
+                                  const char * ctx_str, int32_t clen) {
+    s->ci++;
+    while (s->ci < clen && isdigit((unsigned char)ctx_str[s->ci])) {
+        s->ci++;
+    }
+    while (s->ci < clen && isalpha((unsigned char)ctx_str[s->ci])) {
+        s->ci++;
+    }
+}
+
+// An out-of-range or empty L-group consumes its digits and scores
+// nothing, rather than failing the match.
+
+static void rctx_lgroup(struct rctx_scan * s, const char * ctx_str,
+                        int32_t clen, const char * word, size_t wn,
+                        const struct ruleset * rs) {
+    int32_t gid = 0;
+    s->ci++;
+    while (s->ci < clen && isdigit((unsigned char)ctx_str[s->ci])) {
+        gid = gid * 10 + (ctx_str[s->ci] - '0');
+        s->ci++;
+    }
+    if (gid > 0 && gid < 100 && rs->groups.lgroups[gid].count > 0) {
+        int32_t matched = match_lgroup_at(&rs->groups.lgroups[gid],
+                                      word, wn, s->word_pos);
+        if (matched == 0) {
+            s->ok = false;
+        } else {
+            if (matched > 0) {
+                s->prev_char = word[s->word_pos + matched - 1];
+            }
+            s->word_pos += matched;
+            rctx_advance(s, 20);
+        }
+    }
+}
+
+static void rctx_replaced_e(struct rctx_scan * s, const char * word,
+                            size_t wn, const bool * replaced_e_arr,
+                            size_t re_n) {
+    bool re_marked = replaced_e_arr != NULL
+        && s->word_pos < (int32_t)wn
+        && s->word_pos < (int32_t)re_n
+        && replaced_e_arr[s->word_pos];
+    if (re_marked) {
+        s->prev_char = word[s->word_pos];
+        s->word_pos++;
+        s->ci++;
+        rctx_advance(s, 21);
+    } else {
+        s->ok = false;
+    }
+}
+
+static void rctx_literal(struct rctx_scan * s, char cc,
+                         const char * word, size_t wn) {
+    if (s->word_pos >= (int32_t)wn) {
+        s->ok = false;
+    } else {
+        char wc = (char)tolower((unsigned char)word[s->word_pos]);
+        char mc = (char)tolower((unsigned char)cc);
+        if (wc != mc) {
+            s->ok = false;
+        } else {
+            s->prev_char = word[s->word_pos];
+            s->word_pos++;
+            s->ci++;
+            rctx_advance(s, 21);
+        }
+    }
+}
+
+// Tokens that move the context cursor without consuming a word
+// character. Returns false when `cc` is not one of them; the two token
+// sets are disjoint, so the split preserves the original arm order.
+
+static bool rctx_directive_token(struct rctx_scan * s, char cc,
+                                 const char * ctx_str, int32_t clen,
+                                 const char * word, int32_t pos,
+                                 int32_t word_alt_flags,
+                                 bool suffix_removed) {
+    bool handled = true;
+    if (cc == '#') { rctx_scan_del_fwd(s, word, pos); }
+    else if (cc == '+') { s->score += 20; s->ci++; }
+    else if (cc == '<') { s->score -= 20; s->ci++; }
+    else if (cc == '&') { s->ok = false; }
+    else if (cc == '!') { s->ci++; }
+    else if (cc == '$') { rctx_word_alt(s, ctx_str, clen,
+                                        word_alt_flags); }
+    else if (cc == 'N') { rctx_suffix_removed_cond(s, ctx_str, clen,
+                                                   suffix_removed); }
+    else if (cc == 'P') { rctx_skip_to_space(s, ctx_str, clen); }
+    else if (cc == 'S') { rctx_suffix_directive(s, ctx_str, clen); }
+    else if (isdigit((unsigned char)cc)) { s->ci++; }
+    else { handled = false; }
+    return handled;
+}
+
+static void rctx_consuming_token(struct rctx_scan * s, char cc,
+                                 const char * ctx_str, int32_t clen,
+                                 const char * word, size_t wn,
+                                 const struct ruleset * rs,
+                                 const bool * replaced_e_arr,
+                                 size_t re_n) {
+    if (cc == '_') { rctx_word_end(s, wn); }
+    else if (is_letter_group_ref(cc)) {
+        rctx_letter_group(s, cc, word, wn, rs);
+    }
+    else if (cc == 'K') { rctx_non_vowel(s, word, wn); }
+    else if (cc == 'X') { rctx_no_vowels_left(s, word, wn); }
+    else if (cc == 'D') { rctx_digit_letter(s, word, wn); }
+    else if (cc == 'Z') { rctx_non_alpha(s, word, wn); }
+    else if (cc == '%') { rctx_double_letter(s, word, wn); }
+    else if (cc == '@') { rctx_syllables(s, ctx_str, clen, word, wn); }
+    else if (cc == 'L' && s->ci + 1 < clen
+             && isdigit((unsigned char)ctx_str[s->ci + 1])) {
+        rctx_lgroup(s, ctx_str, clen, word, wn, rs);
+    }
+    else if (cc == 'E') {
+        rctx_replaced_e(s, word, wn, replaced_e_arr, re_n);
+    }
+    else { rctx_literal(s, cc, word, wn); }
+}
 
 // Match right context: scans ctx left-to-right starting at `pos`
 // in word. Token types: literal, '_' word-end, '#' RULE_DEL_FWD,
@@ -2264,258 +2881,37 @@ struct right_ctx_score {
 // word-alt condition, 'N' / Nn suffix-removed condition, 'P' skip
 // to whitespace, 'S<N>[flags]' suffix directive (no consume),
 // LNN L-group ref, 'E' replaced-e match.
+
 static struct right_ctx_score match_right_context_score(
         const char * ctx_str, size_t ctx_n,
-        const char * word, size_t wn, int pos,
+        const char * word, size_t wn, int32_t pos,
         const struct ruleset * rs,
         char initial_prev_char,
-        int word_alt_flags,
+        int32_t word_alt_flags,
         const bool * replaced_e_arr, size_t re_n,
         bool suffix_removed) {
     struct right_ctx_score result = { 0, -1, 0, false };
-    int score = 0;
-    int del_fwd_pos = -1;
-    bool ok = true;
     assert(ctx_n > 0);
-    int word_pos = pos;
-    int ci = 0;
-    int clen = (int)ctx_n;
-    int distance_right = -6;
-    char prev_char = initial_prev_char;
-    while (ci < clen && ok) {
-        char cc = ctx_str[ci];
-        if (cc == '_') {
-            if (word_pos < (int)wn) {
-                ok = false;
-            } else {
-                distance_right += 6;
-                if (distance_right > 19) { distance_right = 19; }
-                ci++;
-                score += 21 - distance_right;
-            }
-        } else if (cc == '#') {
-            if (del_fwd_pos < 0) {
-                for (int sp = pos;
-                     sp < word_pos && del_fwd_pos < 0; sp++) {
-                    if (word[sp] == 'e') { del_fwd_pos = sp; }
-                }
-            }
-            ci++;
-        } else if (cc == 'A' || cc == 'B' || cc == 'C'
-                || cc == 'F' || cc == 'G' || cc == 'H' || cc == 'Y') {
-            if (!match_group(&rs->groups, cc, word, wn, word_pos)) {
-                ok = false;
-            } else {
-                distance_right += 6;
-                if (distance_right > 19) { distance_right = 19; }
-                int lg_pts = (cc == 'C') ? 19 : 20;
-                prev_char = word[word_pos];
-                word_pos++;
-                ci++;
-                score += lg_pts - distance_right;
-            }
-        } else if (cc == 'K') {
-            // K matches non-vowel; null at word end also non-vowel.
-            if (word_pos < (int)wn && is_vowel_letter(word[word_pos])) {
-                ok = false;
-            } else {
-                distance_right += 6;
-                if (distance_right > 19) { distance_right = 19; }
-                if (word_pos < (int)wn) { prev_char = word[word_pos]; }
-                word_pos++;
-                ci++;
-                score += 20 - distance_right;
-            }
-        } else if (cc == 'X') {
-            bool found = false;
-            for (int k = word_pos; k < (int)wn && !found; k++) {
-                if (is_vowel_letter(word[k])) { found = true; }
-            }
-            if (found) {
-                ok = false;
-            } else {
-                distance_right += 6;
-                if (distance_right > 19) { distance_right = 19; }
-                ci++;
-                score += 19 - distance_right;
-            }
-        } else if (cc == 'D') {
-            if (word_pos >= (int)wn
-                || !isdigit((unsigned char)word[word_pos])) {
-                ok = false;
-            } else {
-                distance_right += 6;
-                if (distance_right > 19) { distance_right = 19; }
-                prev_char = word[word_pos];
-                word_pos++;
-                ci++;
-                score += 21 - distance_right;
-            }
-        } else if (cc == 'Z') {
-            if (word_pos >= (int)wn
-                || isalpha((unsigned char)word[word_pos])) {
-                ok = false;
-            } else {
-                distance_right += 6;
-                if (distance_right > 19) { distance_right = 19; }
-                prev_char = word[word_pos];
-                word_pos++;
-                ci++;
-                score += 21 - distance_right;
-            }
-        } else if (cc == '%') {
-            if (word_pos >= (int)wn) {
-                ok = false;
-            } else {
-                char cur = (char)tolower((unsigned char)word[word_pos]);
-                char prv = (char)tolower((unsigned char)prev_char);
-                if (cur != prv) {
-                    ok = false;
-                } else {
-                    distance_right += 6;
-                    if (distance_right > 19) { distance_right = 19; }
-                    prev_char = word[word_pos];
-                    word_pos++;
-                    ci++;
-                    score += 21 - distance_right;
-                }
-            }
-        } else if (cc == '+') {
-            score += 20;
-            ci++;
-        } else if (cc == '<') {
-            score -= 20;
-            ci++;
-        } else if (cc == '@') {
-            int syllable_count = 0;
-            while (ci < clen && ctx_str[ci] == '@') {
-                syllable_count++;
-                ci++;
-            }
-            int vowel_groups = 0;
-            bool in_v = false;
-            for (int wp = word_pos; wp < (int)wn; wp++) {
-                bool v = is_vowel_letter(word[wp]);
-                if (v && !in_v) {
-                    vowel_groups++;
-                    in_v = true;
-                } else if (!v) {
-                    in_v = false;
-                }
-            }
-            if (syllable_count > vowel_groups) {
-                ok = false;
-            } else {
-                distance_right += 6;
-                if (distance_right > 19) { distance_right = 19; }
-                score += 18 + syllable_count - distance_right;
-            }
-        } else if (cc == '&') {
-            ok = false;
-        } else if (cc == '!') {
-            ci++;
-        } else if (cc == '$') {
-            if (ci + 6 < clen && ctx_str[ci + 1] == 'w'
-                && ctx_str[ci + 2] == '_' && ctx_str[ci + 3] == 'a'
-                && ctx_str[ci + 4] == 'l' && ctx_str[ci + 5] == 't'
-                && ctx_str[ci + 6] >= '1' && ctx_str[ci + 6] <= '6') {
-                int alt_n = ctx_str[ci + 6] - '0';
-                int alt_bit = 1 << (alt_n - 1);
-                if (!(word_alt_flags & alt_bit)) {
-                    ok = false;
-                } else {
-                    ci += 7;
-                }
-            } else {
-                ok = false;
-            }
-        } else if (cc == 'N') {
-            if (ci + 1 < clen && isdigit((unsigned char)ctx_str[ci + 1])) {
-                ci += 2;
-            } else if (suffix_removed) {
-                ok = false;
-            } else {
-                score += 1;
-                ci++;
-            }
-        } else if (cc == 'P') {
-            while (ci < clen
-                   && !isspace((unsigned char)ctx_str[ci])) {
-                ci++;
-            }
-        } else if (cc == 'S') {
-            ci++;
-            while (ci < clen && isdigit((unsigned char)ctx_str[ci])) {
-                ci++;
-            }
-            while (ci < clen && isalpha((unsigned char)ctx_str[ci])) {
-                ci++;
-            }
-        } else if (cc == 'L' && ci + 1 < clen
-                   && isdigit((unsigned char)ctx_str[ci + 1])) {
-            int gid = 0;
-            ci++;
-            while (ci < clen && isdigit((unsigned char)ctx_str[ci])) {
-                gid = gid * 10 + (ctx_str[ci] - '0');
-                ci++;
-            }
-            if (gid > 0 && gid < 100
-                && rs->groups.lgroups[gid].count > 0) {
-                int matched = match_lgroup_at(
-                    &rs->groups.lgroups[gid], word, wn, word_pos);
-                if (matched == 0) {
-                    ok = false;
-                } else {
-                    distance_right += 6;
-                    if (distance_right > 19) { distance_right = 19; }
-                    if (matched > 0) {
-                        prev_char = word[word_pos + matched - 1];
-                    }
-                    word_pos += matched;
-                    score += 20 - distance_right;
-                }
-            }
-        } else if (isdigit((unsigned char)cc)) {
-            ci++;
-        } else if (cc == 'E') {
-            bool re_marked = replaced_e_arr != NULL
-                && word_pos < (int)wn
-                && word_pos < (int)re_n
-                && replaced_e_arr[word_pos];
-            if (re_marked) {
-                distance_right += 6;
-                if (distance_right > 19) { distance_right = 19; }
-                prev_char = word[word_pos];
-                word_pos++;
-                ci++;
-                score += 21 - distance_right;
-            } else {
-                ok = false;
-            }
-        } else {
-            if (word_pos >= (int)wn) {
-                ok = false;
-            } else {
-                char wc = (char)tolower((unsigned char)word[word_pos]);
-                char mc = (char)tolower((unsigned char)cc);
-                if (wc != mc) {
-                    ok = false;
-                } else {
-                    distance_right += 6;
-                    if (distance_right > 19) { distance_right = 19; }
-                    prev_char = word[word_pos];
-                    word_pos++;
-                    ci++;
-                    score += 21 - distance_right;
-                }
-            }
+    struct rctx_scan s = {0};
+    s.word_pos       = pos;
+    s.distance_right = -6;
+    s.del_fwd_pos    = -1;
+    s.prev_char      = initial_prev_char;
+    s.ok             = true;
+    int32_t clen = (int32_t)ctx_n;
+    while (s.ci < clen && s.ok) {
+        char cc = ctx_str[s.ci];
+        if (!rctx_directive_token(&s, cc, ctx_str, clen, word, pos,
+                                  word_alt_flags, suffix_removed)) {
+            rctx_consuming_token(&s, cc, ctx_str, clen, word, wn, rs,
+                                 replaced_e_arr, re_n);
         }
     }
-    if (ok) {
-        result.score = score;
+    if (s.ok) {
+        result.score = s.score;
         result.matched = true;
-        if (del_fwd_pos >= 0) {
-            result.del_fwd_start = del_fwd_pos;
+        if (s.del_fwd_pos >= 0) {
+            result.del_fwd_start = s.del_fwd_pos;
             result.del_fwd_count = 1;
         }
     }
@@ -2525,19 +2921,101 @@ static struct right_ctx_score match_right_context_score(
 // Best-match record returned by find_best_rule. Mirrors
 // IPAPhonemizer::RuleMatchResult in phonemizer.h.
 struct rule_match {
-    int          score;
+    int32_t      score;
     struct chars phonemes;
-    int          advance;
-    int          del_start;
-    int          del_count;
+    int32_t      advance;
+    int32_t      del_start;
+    int32_t      del_count;
     bool         is_prefix;
     bool         is_suffix;
-    int          suffix_strip_len;
-    int          suffix_flags;
+    int32_t      suffix_strip_len;
+    int32_t      suffix_flags;
 };
 
 static void rule_match_free(struct rule_match * rm) {
     chars_free(&rm->phonemes);
+}
+
+// The rule's key matches the word at pos, case-insensitively.
+
+static bool rule_key_matches(const struct chars * match,
+                             const char * word, int32_t pos,
+                             int32_t mlen) {
+    bool key_ok = true;
+    for (int32_t i = 0; i < mlen && key_ok; i++) {
+        char wc = (char)tolower((unsigned char)word[pos + i]);
+        char mc = (char)tolower((unsigned char)match->data[i]);
+        if (wc != mc) { key_ok = false; }
+    }
+    return key_ok;
+}
+
+// Everything from a '$' onwards is a flag annotation like "$verb",
+// not phonemes.
+
+static void put_rule_phonemes(const struct phoneme_rule * rule,
+                              struct chars * out) {
+    size_t phn = rule->phonemes.count;
+    const char * pd = rule->phonemes.data;
+    size_t dollar = phn;
+    for (size_t k = 0; k < phn && dollar == phn; k++) {
+        if (pd[k] == '$') { dollar = k; }
+    }
+    struct chars trimmed = {0};
+    trim(pd, dollar, &trimmed);
+    chars_put(out, trimmed.data, trimmed.count);
+    chars_free(&trimmed);
+}
+
+// An absent left context matches with score 0.
+
+static struct ctx_score rule_left_score(
+        const struct ruleset * rs,
+        const struct phoneme_rule * rule,
+        const char * word, size_t wn, int32_t pos,
+        const char * ph_so_far, size_t ph_n) {
+    struct ctx_score ls = { 0, true };
+    if (rule->left_ctx.count > 0) {
+        ls = match_left_context_score(rule->left_ctx.data,
+                                      rule->left_ctx.count,
+                                      word, wn, pos, rs,
+                                      ph_so_far, ph_n);
+    }
+    return ls;
+}
+
+// An absent right context matches with score 0 and no del_fwd.
+
+static struct right_ctx_score rule_right_score(
+        const struct ruleset * rs,
+        const struct phoneme_rule * rule,
+        const char * word, size_t wn, int32_t after,
+        char last_match_char, int32_t word_alt_flags,
+        const bool * replaced_e_arr, size_t re_n,
+        bool suffix_removed) {
+    struct right_ctx_score rr = { 0, -1, 0, true };
+    if (rule->right_ctx.count > 0) {
+        rr = match_right_context_score(rule->right_ctx.data,
+                                       rule->right_ctx.count,
+                                       word, wn, after, rs,
+                                       last_match_char,
+                                       word_alt_flags,
+                                       replaced_e_arr, re_n,
+                                       suffix_removed);
+    }
+    return rr;
+}
+
+// Base 1, plus 21 for every matched character beyond the group, plus
+// both context scores and the dialect bonus.
+
+static int32_t rule_total_score(const struct phoneme_rule * rule,
+                                int32_t mlen, int32_t group_length,
+                                int32_t lscore, int32_t rscore) {
+    int32_t additional = mlen - group_length;
+    if (additional < 0) { additional = 0; }
+    int32_t dialect_bonus = (rule->condition != 0) ? 1 : 0;
+    return 1 + additional * 21 + lscore + rscore + dialect_bonus;
 }
 
 // Match a single rule at `pos` in `word`. Returns the rule's score
@@ -2545,68 +3023,38 @@ static void rule_match_free(struct rule_match * rm) {
 // `*out_phonemes` and the advance + del_fwd info via out-pointers.
 // The caller resets out_phonemes->count = 0 BEFORE calling; the
 // function appends to it.
-static int match_rule(const struct ruleset * rs,
-                      const struct phoneme_rule * rule,
-                      const char * word, size_t wn, int pos,
-                      struct chars * out_phonemes,
-                      int * advance,
-                      int * del_fwd_start,
-                      int * del_fwd_count,
-                      int group_length,
-                      const char * ph_so_far, size_t ph_n,
-                      int word_alt_flags,
-                      const bool * replaced_e_arr, size_t re_n,
-                      bool suffix_removed) {
-    int result = -1;
+static int32_t match_rule(const struct ruleset * rs,
+                          const struct phoneme_rule * rule,
+                          const char * word, size_t wn, int32_t pos,
+                          struct chars * out_phonemes,
+                          int32_t * advance,
+                          int32_t * del_fwd_start,
+                          int32_t * del_fwd_count,
+                          int32_t group_length,
+                          const char * ph_so_far, size_t ph_n,
+                          int32_t word_alt_flags,
+                          const bool * replaced_e_arr, size_t re_n,
+                          bool suffix_removed) {
+    int32_t result = -1;
     const struct chars * match = &rule->match;
-    int mlen = (int)match->count;
-    if (pos + mlen <= (int)wn) {
-        bool key_ok = true;
-        for (int i = 0; i < mlen && key_ok; i++) {
-            char wc = (char)tolower((unsigned char)word[pos + i]);
-            char mc = (char)tolower((unsigned char)match->data[i]);
-            if (wc != mc) { key_ok = false; }
-        }
-        if (key_ok) {
-            int lscore = 0;
-            bool lmatch = true;
-            if (rule->left_ctx.count > 0) {
-                struct ctx_score ls = match_left_context_score(
-                    rule->left_ctx.data, rule->left_ctx.count,
-                    word, wn, pos, rs, ph_so_far, ph_n);
-                lscore = ls.score;
-                lmatch = ls.matched;
-            }
-            if (lmatch) {
+    int32_t mlen = (int32_t)match->count;
+    if (pos + mlen <= (int32_t)wn) {
+        if (rule_key_matches(match, word, pos, mlen)) {
+            struct ctx_score ls = rule_left_score(rs, rule, word, wn,
+                                                  pos, ph_so_far,
+                                                  ph_n);
+            if (ls.matched) {
                 char last_match_char = (mlen > 0)
                     ? word[pos + mlen - 1] : 0;
-                struct right_ctx_score rresult = { 0, -1, 0, true };
-                if (rule->right_ctx.count > 0) {
-                    rresult = match_right_context_score(
-                        rule->right_ctx.data, rule->right_ctx.count,
-                        word, wn, pos + mlen, rs,
-                        last_match_char, word_alt_flags,
-                        replaced_e_arr, re_n, suffix_removed);
-                }
+                struct right_ctx_score rresult = rule_right_score(
+                    rs, rule, word, wn, pos + mlen, last_match_char,
+                    word_alt_flags, replaced_e_arr, re_n,
+                    suffix_removed);
                 if (rresult.matched) {
-                    int additional = mlen - group_length;
-                    if (additional < 0) { additional = 0; }
-                    int dialect_bonus = (rule->condition != 0) ? 1 : 0;
-                    int total = 1 + additional * 21 + lscore
-                              + rresult.score + dialect_bonus;
-                    // Phonemes: strip everything from '$' onwards
-                    // (flag annotations like "$verb").
-                    size_t phn = rule->phonemes.count;
-                    const char * pd = rule->phonemes.data;
-                    size_t dollar = phn;
-                    for (size_t k = 0; k < phn && dollar == phn; k++) {
-                        if (pd[k] == '$') { dollar = k; }
-                    }
-                    struct chars trimmed = {0};
-                    trim(pd, dollar, &trimmed);
-                    chars_put(out_phonemes,
-                              trimmed.data, trimmed.count);
-                    chars_free(&trimmed);
+                    int32_t total = rule_total_score(
+                        rule, mlen, group_length, ls.score,
+                        rresult.score);
+                    put_rule_phonemes(rule, out_phonemes);
                     *advance       = mlen;
                     *del_fwd_start = rresult.del_fwd_start;
                     *del_fwd_count = rresult.del_fwd_count;
@@ -2623,10 +3071,10 @@ static int match_rule(const struct ruleset * rs,
 // is added to each rule's score (2-char group gets +35). Replaces
 // the [&] try_group lambda inside findBestRule.
 static void try_group(const struct ruleset * rs,
-                      const char * key, size_t kn, int bonus,
-                      int group_length,
-                      const char * word, size_t wn, int pos,
-                      int len, int word_alt_flags,
+                      const char * key, size_t kn, int32_t bonus,
+                      int32_t group_length,
+                      const char * word, size_t wn, int32_t pos,
+                      int32_t len, int32_t word_alt_flags,
                       const bool * replaced_e, size_t re_n,
                       bool allow_suffix_strip,
                       bool suffix_phoneme_only,
@@ -2642,8 +3090,8 @@ static void try_group(const struct ruleset * rs,
         for (size_t i = 0; i < rv->count; i++) {
             const struct phoneme_rule * rule = &rv->data[i];
             struct chars ph = {0};
-            int adv = 0, dfs = -1, dfc = 0;
-            int sc = match_rule(rs, rule, word, wn, pos,
+            int32_t adv = 0, dfs = -1, dfc = 0;
+            int32_t sc = match_rule(rs, rule, word, wn, pos,
                                 &ph, &adv, &dfs, &dfc,
                                 group_length, ph_so_far, ph_n,
                                 word_alt_flags,
@@ -2676,9 +3124,9 @@ static void try_group(const struct ruleset * rs,
 // last-rule-wins via the `>=` comparison in try_group).
 static struct rule_match find_best_rule(const struct ruleset * rs,
                                         const char * word, size_t wn,
-                                        int pos, int len,
+                                        int32_t pos, int32_t len,
                                         char pos_char,
-                                        int word_alt_flags,
+                                        int32_t word_alt_flags,
                                         const bool * replaced_e,
                                         size_t re_n,
                                         bool allow_suffix_strip,
@@ -2716,11 +3164,11 @@ static struct rule_match find_best_rule(const struct ruleset * rs,
 // byte. Returns the byte (or 0 if none) via *prev_ch, its index
 // via *prev_pos (-1 if none). Replaces the C++ prevNonBnd `[&]`
 // lambda (called 3 times in findLastStressableVowel).
-static void prev_non_bnd(const char * ph, int from,
-                         char * prev_ch, int * prev_pos) {
+static void prev_non_bnd(const char * ph, int32_t from,
+                         char * prev_ch, int32_t * prev_pos) {
     *prev_ch = 0;
     *prev_pos = -1;
-    for (int pi = from - 1; pi >= 0 && *prev_pos < 0; pi--) {
+    for (int32_t pi = from - 1; pi >= 0 && *prev_pos < 0; pi--) {
         if (ph[pi] != '\x01') {
             *prev_ch = ph[pi];
             *prev_pos = pi;
@@ -2734,37 +3182,42 @@ static void prev_non_bnd(const char * ph, int from,
 // and codes already marked unstressed ('%' or '=' immediately
 // preceding). Steps back through multi-char diphthong codes (eI,
 // aU, oU, aa, A@, e@, ...) so the index lands at the START byte.
-static int find_last_stressable_vowel(const char * phonemes, size_t pn) {
-    static const char sp_vowels[]  = "aAeEiIoOuUV03@";
+// A diphthong, "aa" or a schwa-tail code starts one position
+// earlier, so step si back to its first byte.
+
+static void step_back_vowel_code(const char * phonemes, char sc,
+                                 int32_t * si, char * prev_ch,
+                                 int32_t * prev_pos) {
     static const char diph_second[] = "IU";
     static const char diph_start[]  = "eaOoUAE";
     static const char at_starters[] = "AeioOU";
-    int insert_at = -1;
-    int slen = (int)pn;
-    for (int si = slen - 1; si >= 0 && insert_at < 0; si--) {
+    if ((strchr(diph_second, sc) != NULL
+         && strchr(diph_start, *prev_ch) != NULL)
+        || (sc == 'a' && *prev_ch == 'a')
+        || (sc == '@' && strchr(at_starters, *prev_ch) != NULL)) {
+        *si = *prev_pos;
+        prev_non_bnd(phonemes, *si, prev_ch, prev_pos);
+    }
+}
+
+static int32_t find_last_stressable_vowel(const char * phonemes,
+                                          size_t pn) {
+    static const char sp_vowels[]  = "aAeEiIoOuUV03@";
+    int32_t insert_at = -1;
+    int32_t slen = (int32_t)pn;
+    for (int32_t si = slen - 1; si >= 0 && insert_at < 0; si--) {
         char sc = phonemes[si];
         if (sc != '\x01' && strchr(sp_vowels, sc) != NULL) {
-            int ni = si + 1;
+            int32_t ni = si + 1;
             while (ni < slen && phonemes[ni] == '\x01') { ni++; }
             bool is_reduced = ni < slen
                 && (phonemes[ni] == '2' || phonemes[ni] == '#');
             if (!is_reduced) {
                 char prev_ch = 0;
-                int  prev_pos = -1;
+                int32_t prev_pos = -1;
                 prev_non_bnd(phonemes, si, &prev_ch, &prev_pos);
-                // Step back through multi-char vowel codes.
-                if (strchr(diph_second, sc) != NULL
-                    && strchr(diph_start, prev_ch) != NULL) {
-                    si = prev_pos;
-                    prev_non_bnd(phonemes, si, &prev_ch, &prev_pos);
-                } else if (sc == 'a' && prev_ch == 'a') {
-                    si = prev_pos;
-                    prev_non_bnd(phonemes, si, &prev_ch, &prev_pos);
-                } else if (sc == '@'
-                           && strchr(at_starters, prev_ch) != NULL) {
-                    si = prev_pos;
-                    prev_non_bnd(phonemes, si, &prev_ch, &prev_pos);
-                }
+                step_back_vowel_code(phonemes, sc, &si, &prev_ch,
+                                     &prev_pos);
                 if (prev_ch != '%' && prev_ch != '=') {
                     insert_at = si;
                 }
@@ -2786,12 +3239,12 @@ static void apply_stress_prev(struct chars * emit,
         memmove(emit->data, emit->data + 1, emit->count - 1);
         emit->count -= 1;
         emit->data[emit->count] = '\0';
-        int insert_at = find_last_stressable_vowel(
+        int32_t insert_at = find_last_stressable_vowel(
             phonemes->data, phonemes->count);
         if (insert_at >= 0) {
-            assert(phonemes->data != NULL); // a found vowel implies non-empty data
+            assert(phonemes->data != NULL);  // a vowel was found
             char before_vowel = 0;
-            for (int pi = insert_at - 1;
+            for (int32_t pi = insert_at - 1;
                  pi >= 0 && before_vowel == 0; pi--) {
                 if (phonemes->data[pi] != '\x01') {
                     before_vowel = phonemes->data[pi];
@@ -2806,7 +3259,7 @@ static void apply_stress_prev(struct chars * emit,
                 phonemes->data[insert_at] = '\'';
                 phonemes->count += 1;
                 phonemes->data[phonemes->count] = '\0';
-                for (int di = 0; di < insert_at; di++) {
+                for (int32_t di = 0; di < insert_at; di++) {
                     if (phonemes->data[di] == '\'') {
                         phonemes->data[di] = '\x02';
                     }
@@ -2825,7 +3278,7 @@ static void apply_stress_prev(struct chars * emit,
 static void apply_rules(struct phonemizer * p,
                         const char * word_orig, size_t wn,
                         bool allow_suffix_strip,
-                        int word_alt_flags_param,
+                        int32_t word_alt_flags_param,
                         bool suffix_phoneme_only,
                         bool suffix_removed,
                         bool * out_replaced_e, size_t out_re_cap,
@@ -2851,7 +3304,7 @@ static void find_phoneme_code(const char * ph, size_t pn, size_t pos,
                               const char ** out_data, size_t * out_len) {
     *out_data = NULL;
     *out_len = 0;
-    for (int mi = 0; S_MC2[mi] != NULL && *out_data == NULL; mi++) {
+    for (int32_t mi = 0; S_MC2[mi] != NULL && *out_data == NULL; mi++) {
         size_t mclen = strlen(S_MC2[mi]);
         if (pos + mclen <= pn
             && memcmp(ph + pos, S_MC2[mi], mclen) == 0) {
@@ -2865,13 +3318,171 @@ static void find_phoneme_code(const char * ph, size_t pn, size_t pos,
     }
 }
 
+// @2 @5 @L, I# I2, a# -- the reduced two-character vowels.
+
+static bool is_weak_two_char_vowel(const char * code) {
+    return (code[0] == '@' && (code[1] == '2' || code[1] == '5'
+                            || code[1] == 'L'))
+        || (code[0] == 'I' && (code[1] == '#' || code[1] == '2'))
+        || (code[0] == 'a' && code[1] == '#');
+}
+
+// The reduced set as seen from after a compound's "=" marker, where a
+// bare "i" and "i@" also count as too weak to carry the primary.
+
+static bool is_weak_tail_vowel(const char * code, size_t n) {
+    bool r = false;
+    if (n == 1) {
+        r = code[0] == '@' || code[0] == '3' || code[0] == 'i';
+    } else if (n == 2) {
+        r = is_weak_two_char_vowel(code)
+         || (code[0] == 'i' && code[1] == '@');
+    }
+    return r;
+}
+
+static bool is_reduced_vowel(const char * code, size_t n) {
+    return (n == 2 && is_weak_two_char_vowel(code))
+        || (n == 1 && code[0] == 'i');
+}
+
+static bool is_schwa_vowel(const char * code, size_t n) {
+    return n == 1 && (code[0] == '@' || code[0] == '3');
+}
+
+static bool is_weak_vowel(const char * code, size_t n) {
+    return is_schwa_vowel(code, n) || is_reduced_vowel(code, n);
+}
+
+// The same set without the bare 'i'.
+
+static bool is_reduced_or_schwa(const char * code, size_t n) {
+    return is_schwa_vowel(code, n)
+        || (n == 2 && is_weak_two_char_vowel(code));
+}
+
+// "@-" is a syllable-boundary marker, not a syllable of its own.
+
+static bool is_hyphenated_schwa(const struct chars * ph, size_t pi,
+                                const char * code, size_t code_len) {
+    return code_len == 1 && code[0] == '@' && pi + 1 < ph->count
+        && ph->data[pi + 1] == '-';
+}
+
+// @, 3 and the @2/@5/@L variants -- the schwa family.
+
+static bool is_schwa_family(const char * code, size_t n) {
+    return is_schwa_vowel(code, n)
+        || (n == 2 && code[0] == '@'
+            && (code[1] == '2' || code[1] == '5' || code[1] == 'L'));
+}
+
+static void insert_marker_at(struct chars * ph, size_t at, char marker) {
+    chars_grow(ph, ph->count + 2);
+    memmove(ph->data + at + 1, ph->data + at, ph->count - at);
+    ph->data[at] = marker;
+    ph->count += 1;
+    ph->data[ph->count] = '\0';
+}
+
+static void chars_erase_at(struct chars * ph, size_t at) {
+    memmove(ph->data + at, ph->data + at + 1, ph->count - at - 1);
+    ph->count -= 1;
+    ph->data[ph->count] = '\0';
+}
+
+// One vowel of the phoneme string with the stress level of the marker
+// that preceded it. `code` deliberately stays a live view into ph:
+// later insertions shift the bytes under it and the scan reads what
+// the buffer holds now, which is what the reference does.
+enum { MAX_SYL4 = 256 };
+
+struct troch_syl {
+    size_t       pos;
+    const char * code;
+    size_t       code_len;
+    int32_t      level;
+};
+
+static int32_t collect_trochaic_syllables(const struct chars * ph,
+                                          struct troch_syl * syls) {
+    int32_t n = 0;
+    size_t pi = 0;
+    int32_t cur_level = -1;
+    while (pi < ph->count && n < MAX_SYL4) {
+        char c = ph->data[pi];
+        if (c == '\'') { cur_level = 4; pi++; }
+        else if (c == ',') { cur_level = 2; pi++; }
+        else if (c == '%' || c == '=') { cur_level = 1; pi++; }
+        else {
+            const char * code = NULL;
+            size_t code_len = 0;
+            find_phoneme_code(ph->data, ph->count, pi,
+                              &code, &code_len);
+            if (is_vowel_code(code, code_len)) {
+                syls[n].pos = pi;
+                syls[n].code = code;
+                syls[n].code_len = code_len;
+                syls[n].level = cur_level;
+                n++;
+            }
+            cur_level = -1;
+            pi += code_len;
+        }
+    }
+    return n;
+}
+
+// Stress level of the nearest non-schwa syllable in `step`'s
+// direction, or -1 when the string runs out.
+
+static int32_t effective_level(const struct troch_syl * syls, int32_t n,
+                               int32_t sv, int32_t step) {
+    int32_t lv = -1;
+    int32_t nv = sv + step;
+    while (nv >= 0 && nv < n
+           && is_schwa_family(syls[nv].code, syls[nv].code_len)) {
+        nv += step;
+    }
+    if (nv >= 0 && nv < n) { lv = syls[nv].level; }
+    return lv;
+}
+
+// With no primary in the input, the first trochaic assignment becomes
+// the primary: the pick_last one is pulled out and every syllable
+// index it shifted is corrected.
+
+static void promote_trochaic_primary(struct chars * ph,
+                                     struct troch_syl * syls, int32_t n,
+                                     int32_t sv) {
+    char * pm = memchr(ph->data, '\'', ph->count);
+    if (pm != NULL) {
+        size_t pp = (size_t)(pm - ph->data);
+        chars_erase_at(ph, pp);
+        for (int32_t k = 0; k < n; k++) {
+            if (syls[k].pos > pp) { syls[k].pos--; }
+            if (syls[k].level == 4) { syls[k].level = -1; }
+        }
+    }
+    insert_marker_at(ph, syls[sv].pos, '\'');
+    for (int32_t nv = sv + 1; nv < n; nv++) { syls[nv].pos++; }
+    syls[sv].level = 4;
+}
+
+static void insert_trochaic_secondary(struct chars * ph,
+                                      struct troch_syl * syls, int32_t n,
+                                      int32_t sv) {
+    insert_marker_at(ph, syls[sv].pos, ',');
+    for (int32_t nv = sv + 1; nv < n; nv++) { syls[nv].pos++; }
+}
+
 // Apply Nth-vowel primary-stress placement to raw phoneme string.
 // Strips ALL existing '\'' / ',' first, then inserts '\'' before
 // the n-th vowel code (vowel-aware multi-char scan). Caller-owned
 // out; reset to count=0 on entry not required (the function does
 // its own).
 static void apply_stress_position(const char * raw, size_t rn,
-                                  int n, struct chars * out) {
+                                  int32_t n, struct chars * out) {
     out->count = 0;
     // Pass 1: copy raw -> out, dropping all '\'' and ','.
     chars_grow(out, rn + 1);
@@ -2883,7 +3494,7 @@ static void apply_stress_position(const char * raw, size_t rn,
     out->data[out->count] = '\0';
     // Pass 2: scan multi-char-aware, count vowel codes, insert
     // '\'' before the n-th.
-    int vowel_count = 0;
+    int32_t vowel_count = 0;
     size_t pi = 0;
     bool inserted = false;
     while (pi < out->count && !inserted) {
@@ -2913,6 +3524,86 @@ static void apply_stress_position(const char * raw, size_t rn,
     }
 }
 
+// The plural / 3rd-person allomorphs never restore a magic e.
+
+static bool suffix_is_bare_s(const char * suffix_ph, size_t sn) {
+    return (sn == 1 && suffix_ph[0] == 's')
+        || (sn == 1 && suffix_ph[0] == 'z')
+        || (sn == 3 && memcmp(suffix_ph, "I#z", 3) == 0)
+        || (sn == 4 && memcmp(suffix_ph, "%I#z", 4) == 0);
+}
+
+static bool verb_dict_has_stem_e(struct phonemizer * p,
+                                 const struct chars * stem_norm) {
+    struct chars stem_e = {0};
+    chars_put(&stem_e, stem_norm->data, stem_norm->count);
+    chars_put_byte(&stem_e, 'e');
+    bool found = smap_get(&p->verb_dict, stem_e.data, stem_e.count)
+                 != NULL;
+    chars_free(&stem_e);
+    return found;
+}
+
+// A stem the dictionaries already spell keeps its own spelling.
+
+static bool stem_bare_in_dicts(struct phonemizer * p,
+                               const struct chars * stem_norm,
+                               bool sfx_is_s_bare) {
+    bool in_dict = false;
+    if (!sfx_is_s_bare) {
+        in_dict = smap_get(&p->verb_dict, stem_norm->data,
+                           stem_norm->count) != NULL;
+    }
+    bool blocked_by_onlys = set_has(&p->onlys_words, stem_norm->data,
+                                    stem_norm->count)
+        || set_has(&p->only_words, stem_norm->data,
+                   stem_norm->count);
+    if (!in_dict && !blocked_by_onlys) {
+        in_dict = smap_get(&p->dict, stem_norm->data,
+                           stem_norm->count) != NULL;
+    }
+    return in_dict;
+}
+
+// Endings whose dropped 'e' the consonant shape below cannot recover.
+
+static bool stem_ending_wants_e(const struct chars * stem) {
+    static const char * const add_e_endings[] = {
+        "c", "rs", "ir", "ur", "ath", "ns", "u",
+        "spong", "rang", "larg", NULL
+    };
+    bool add_e = false;
+    for (int32_t ai = 0; add_e_endings[ai] != NULL && !add_e; ai++) {
+        size_t plen = strlen(add_e_endings[ai]);
+        if (stem->count >= plen
+            && memcmp(stem->data + stem->count - plen,
+                      add_e_endings[ai], plen) == 0) {
+            add_e = true;
+        }
+    }
+    return add_e;
+}
+
+// Vowel plus hard consonant is the magic-e shape; "-ion" is not.
+
+static bool stem_shape_wants_e(const struct chars * stem) {
+    static const char vowels_incl_y[] = "aeiouy";
+    static const char hard_cons[] = "bcdfgjklmnpqstvxz";
+    bool add_e = false;
+    if (stem->count >= 2) {
+        char last = (char)tolower(
+            (unsigned char)stem->data[stem->count - 1]);
+        char prev = (char)tolower(
+            (unsigned char)stem->data[stem->count - 2]);
+        bool last_hard = strchr(hard_cons, last) != NULL;
+        bool prev_vowel = strchr(vowels_incl_y, prev) != NULL;
+        bool ion_exc = stem->count >= 3
+            && memcmp(stem->data + stem->count - 3, "ion", 3) == 0;
+        add_e = last_hard && prev_vowel && !ion_exc;
+    }
+    return add_e;
+}
+
 // SUFX_E: conditionally append 'e' to stem so dict / magic-e rules
 // fire on the original verb form. Mutates `*stem` in place (count +
 // data may grow by one byte).
@@ -2920,78 +3611,25 @@ static void append_magic_e_if_needed(struct phonemizer * p,
                                      struct chars * stem,
                                      const char * suffix_ph,
                                      size_t sn,
-                                     int suffix_flags) {
-    const int SUFX_E_BIT = 0x100;
-    const int SUFX_V_BIT = 0x800;
+                                     int32_t suffix_flags) {
+    const int32_t SUFX_E_BIT = 0x100;
+    const int32_t SUFX_V_BIT = 0x800;
     bool entering = (suffix_flags & SUFX_E_BIT)
                  && stem->count > 0
                  && stem->data[stem->count - 1] != 'e';
     if (entering) {
         struct chars stem_norm = {0};
         to_lower(stem->data, stem->count, &stem_norm);
-        bool sfx_is_s_bare =
-            (sn == 1 && suffix_ph[0] == 's')
-            || (sn == 1 && suffix_ph[0] == 'z')
-            || (sn == 3 && memcmp(suffix_ph, "I#z", 3) == 0)
-            || (sn == 4 && memcmp(suffix_ph, "%I#z", 4) == 0);
-        if (!sfx_is_s_bare && (suffix_flags & SUFX_V_BIT)) {
-            // Try stem+"e" lookup in verb_dict.
-            struct chars stem_e = {0};
-            chars_put(&stem_e, stem_norm.data, stem_norm.count);
-            chars_put_byte(&stem_e, 'e');
-            if (smap_get(&p->verb_dict, stem_e.data, stem_e.count)
-                != NULL) {
-                chars_put_byte(stem, 'e');
-            }
-            chars_free(&stem_e);
+        bool sfx_is_s_bare = suffix_is_bare_s(suffix_ph, sn);
+        if (!sfx_is_s_bare && (suffix_flags & SUFX_V_BIT)
+            && verb_dict_has_stem_e(p, &stem_norm)) {
+            chars_put_byte(stem, 'e');
         }
-        if (stem->data[stem->count - 1] != 'e') {
-            bool stem_bare_in_dict = false;
-            if (!sfx_is_s_bare) {
-                stem_bare_in_dict = smap_get(
-                    &p->verb_dict, stem_norm.data,
-                    stem_norm.count) != NULL;
-            }
-            bool blocked_by_onlys = set_has(
-                &p->onlys_words, stem_norm.data, stem_norm.count)
-                || set_has(&p->only_words,
-                           stem_norm.data, stem_norm.count);
-            if (!stem_bare_in_dict && !blocked_by_onlys) {
-                stem_bare_in_dict = smap_get(
-                    &p->dict, stem_norm.data, stem_norm.count) != NULL;
-            }
-            if (!stem_bare_in_dict) {
-                static const char * const add_e_endings[] = {
-                    "c", "rs", "ir", "ur", "ath", "ns", "u",
-                    "spong", "rang", "larg", NULL
-                };
-                static const char vowels_incl_y[] = "aeiouy";
-                static const char hard_cons[] = "bcdfgjklmnpqstvxz";
-                bool add_e = false;
-                for (int ai = 0;
-                     add_e_endings[ai] != NULL && !add_e; ai++) {
-                    size_t plen = strlen(add_e_endings[ai]);
-                    if (stem->count >= plen
-                        && memcmp(stem->data + stem->count - plen,
-                                  add_e_endings[ai], plen) == 0) {
-                        add_e = true;
-                    }
-                }
-                if (!add_e && stem->count >= 2) {
-                    char last = (char)tolower(
-                        (unsigned char)stem->data[stem->count - 1]);
-                    char prev = (char)tolower(
-                        (unsigned char)stem->data[stem->count - 2]);
-                    bool last_hard = strchr(hard_cons, last) != NULL;
-                    bool prev_vowel = strchr(vowels_incl_y, prev)
-                        != NULL;
-                    bool ion_exc = stem->count >= 3
-                        && memcmp(stem->data + stem->count - 3,
-                                  "ion", 3) == 0;
-                    add_e = last_hard && prev_vowel && !ion_exc;
-                }
-                if (add_e) { chars_put_byte(stem, 'e'); }
-            }
+        if (stem->data[stem->count - 1] != 'e'
+            && !stem_bare_in_dicts(p, &stem_norm, sfx_is_s_bare)
+            && (stem_ending_wants_e(stem)
+                || stem_shape_wants_e(stem))) {
+            chars_put_byte(stem, 'e');
         }
         chars_free(&stem_norm);
     }
@@ -3017,12 +3655,53 @@ static void stem_lookup_free(struct stem_lookup * sl) {
 // dict / dict / magic-e fallback (dt_noe) in priority order.
 // Returns a populated stem_lookup; the matched_stem field reflects
 // which key won (relevant for the dt_noe path).
+// An "only"-flagged stem has no bare pronunciation, so the -s path
+// consults onlys_bare_dict before the plain dictionary.
+
+static void lookup_stem_step2(struct phonemizer * p,
+                              const char * stem_norm, size_t snn,
+                              bool stem_is_onlys, bool suffix_is_s,
+                              struct stem_lookup * r) {
+    if (suffix_is_s) {
+        struct chars * o = smap_get(&p->onlys_bare_dict, stem_norm,
+                                    snn);
+        if (o != NULL) {
+            chars_put(&r->stem_ph, o->data, o->count);
+            r->used_onlys_bare = true;
+        }
+    }
+    if (!r->used_onlys_bare) {
+        struct chars * d = smap_get(&p->dict, stem_norm, snn);
+        if (d != NULL && !stem_is_onlys) {
+            chars_put(&r->stem_ph, d->data, d->count);
+            r->found_dict_entry = true;
+        }
+    }
+}
+
+// The magic-e-stripped stem, which is why matched_stem can differ
+// from the stem passed in.
+
+static void lookup_stem_step3(struct phonemizer * p,
+                              const char * stem_norm, size_t snn2,
+                              struct stem_lookup * r) {
+    struct chars * d = smap_get(&p->dict, stem_norm, snn2);
+    bool blocked = set_has(&p->onlys_words, stem_norm, snn2)
+                || set_has(&p->only_words,  stem_norm, snn2);
+    if (d != NULL && !blocked) {
+        chars_put(&r->stem_ph, d->data, d->count);
+        r->matched_stem.count = 0;
+        chars_put(&r->matched_stem, stem_norm, snn2);
+        r->found_dict_entry = true;
+    }
+}
+
 static struct stem_lookup lookup_stem_in_dicts(
         struct phonemizer * p,
         const char * stem_norm, size_t snn,
         bool stem_is_onlys, bool suffix_is_s,
-        int suffix_flags) {
-    const int SUFX_V_BIT = 0x800;
+        int32_t suffix_flags) {
+    const int32_t SUFX_V_BIT = 0x800;
     struct stem_lookup r = { {0}, {0}, false, false };
     chars_put(&r.matched_stem, stem_norm, snn);
     // Step 1: verb_dict (when SUFX_V is set and the suffix isn't -s).
@@ -3035,35 +3714,13 @@ static struct stem_lookup lookup_stem_in_dicts(
     }
     // Step 2: onlys_bare_dict (for -s) or dict.
     if (!r.found_dict_entry) {
-        if (suffix_is_s) {
-            struct chars * o = smap_get(
-                &p->onlys_bare_dict, stem_norm, snn);
-            if (o != NULL) {
-                chars_put(&r.stem_ph, o->data, o->count);
-                r.used_onlys_bare = true;
-            }
-        }
-        if (!r.used_onlys_bare) {
-            struct chars * d = smap_get(&p->dict, stem_norm, snn);
-            if (d != NULL && !stem_is_onlys) {
-                chars_put(&r.stem_ph, d->data, d->count);
-                r.found_dict_entry = true;
-            }
-        }
+        lookup_stem_step2(p, stem_norm, snn, stem_is_onlys,
+                          suffix_is_s, &r);
     }
     // Step 3: magic-e-stripped fallback ("tornadoe" -> "tornado").
     if (!r.found_dict_entry && !r.used_onlys_bare
         && snn > 1 && stem_norm[snn - 1] == 'e') {
-        size_t snn2 = snn - 1;
-        struct chars * d = smap_get(&p->dict, stem_norm, snn2);
-        bool blocked = set_has(&p->onlys_words, stem_norm, snn2)
-                    || set_has(&p->only_words,  stem_norm, snn2);
-        if (d != NULL && !blocked) {
-            chars_put(&r.stem_ph, d->data, d->count);
-            r.matched_stem.count = 0;
-            chars_put(&r.matched_stem, stem_norm, snn2);
-            r.found_dict_entry = true;
-        }
+        lookup_stem_step3(p, stem_norm, snn - 1, &r);
     }
     return r;
 }
@@ -3076,10 +3733,10 @@ static void apply_stem_stress_or_rules_fallback(
         const char * stem, size_t stem_n,
         const char * stem_norm, size_t snn,
         const struct stem_lookup * lookup,
-        int word_alt_flags,
+        int32_t word_alt_flags,
         const struct rule_match * match,
         struct chars * out) {
-    const int SUFX_V_BIT = 0x800;
+    const int32_t SUFX_V_BIT = 0x800;
     out->count = 0;
     if (out->data != NULL) { out->data[0] = '\0'; }
     if (lookup->used_onlys_bare || lookup->found_dict_entry) {
@@ -3090,7 +3747,7 @@ static void apply_stem_stress_or_rules_fallback(
             key = &lookup->matched_stem;
         }
         chars_put(out, lookup->stem_ph.data, lookup->stem_ph.count);
-        int * sp = imap_get(&p->stress_pos, key->data, key->count);
+        int32_t * sp = imap_get(&p->stress_pos, key->data, key->count);
         if (sp != NULL) {
             struct chars stressed = {0};
             apply_stress_position(out->data, out->count, *sp,
@@ -3102,7 +3759,7 @@ static void apply_stem_stress_or_rules_fallback(
     } else {
         // Combine stem's own $altN with parent word's; try stem+"e"
         // too ("fertil"->"fertile" inheritance).
-        int * stem_own = imap_get(&p->word_alt_flags,
+        int32_t * stem_own = imap_get(&p->word_alt_flags,
                                   stem_norm, snn);
         if (stem_own == NULL) {
             struct chars try_e = {0};
@@ -3112,8 +3769,8 @@ static void apply_stem_stress_or_rules_fallback(
                                 try_e.data, try_e.count);
             chars_free(&try_e);
         }
-        int stem_alt = stem_own != NULL ? *stem_own : 0;
-        int combined = stem_alt | word_alt_flags;
+        int32_t stem_alt = stem_own != NULL ? *stem_own : 0;
+        int32_t combined = stem_alt | word_alt_flags;
         apply_rules(p, stem, stem_n,
                     true, combined,
                     false, true,
@@ -3121,7 +3778,7 @@ static void apply_stem_stress_or_rules_fallback(
                     out);
         // $N stress override on the result; skip noun-form-only
         // when suffix is verbal, skip $verb-flag words entirely.
-        int * sp2 = imap_get(&p->stress_pos, stem_norm, snn);
+        int32_t * sp2 = imap_get(&p->stress_pos, stem_norm, snn);
         bool noun_form = set_has(&p->noun_form_stress,
                                  stem_norm, snn);
         bool verb_flag = set_has(&p->verb_flag_words,
@@ -3145,7 +3802,7 @@ static void apply_stem_stress_or_rules_fallback(
 static bool stem_phoneme_from_dict(struct phonemizer * p,
                                    const char * stem, size_t stem_n,
                                    const struct rule_match * match,
-                                   int word_alt_flags,
+                                   int32_t word_alt_flags,
                                    struct chars * out) {
     bool produced = false;
     if (stem_n > 0) {
@@ -3186,15 +3843,15 @@ static bool stem_phoneme_from_dict(struct phonemizer * p,
 // return stem_ph + suffix_ph via *out.
 static void process_suffix_rule(struct phonemizer * p,
                                 const char * word, size_t wn,
-                                int word_alt_flags,
+                                int32_t word_alt_flags,
                                 const struct rule_match * match,
                                 struct chars * out) {
-    int strip = match->suffix_strip_len;
-    if (strip <= 0 || strip > (int)wn) { strip = match->advance; }
+    int32_t strip = match->suffix_strip_len;
+    if (strip <= 0 || strip > (int32_t)wn) { strip = match->advance; }
     size_t stem_n = wn - (size_t)strip;
     struct chars stem = {0};
     chars_put(&stem, word, stem_n);
-    const int SUFX_I_BIT = 0x200;
+    const int32_t SUFX_I_BIT = 0x200;
     if ((match->suffix_flags & SUFX_I_BIT)
         && stem.count > 0
         && stem.data[stem.count - 1] == 'i') {
@@ -3247,6 +3904,28 @@ static void apply_velar_nasal_assimilation(struct chars * ph) {
 // Step 2: Happy tensing -- word-final unstressed ɪ -> i (American
 // English). Applies to %I, I2, and bare-I at word end (unstressed
 // and not part of a diphthong).
+// A final bare 'I' tenses to 'i' in a polysyllable, unless it is
+// stressed or the tail of a diphthong.
+
+static void tense_final_bare_i(struct chars * ph) {
+    char prev = ph->count >= 2 ? ph->data[ph->count - 2] : 0;
+    static const char diphthong_before[] = "eaOoU";
+    bool part_of_diph = prev != 0
+        && strchr(diphthong_before, prev) != NULL;
+    if (prev != '\'' && prev != ',' && !part_of_diph) {
+        static const char all_vowels[] = "aAeEiIOUV03o";
+        int32_t vowel_count = 0;
+        for (size_t i = 0; i < ph->count; i++) {
+            if (strchr(all_vowels, ph->data[i]) != NULL) {
+                vowel_count++;
+            }
+        }
+        if (vowel_count > 1) {
+            ph->data[ph->count - 1] = 'i';
+        }
+    }
+}
+
 static void apply_happy_tensing(struct chars * ph) {
     if (ph->count >= 2
         && ph->data[ph->count - 2] == '%'
@@ -3259,22 +3938,7 @@ static void apply_happy_tensing(struct chars * ph) {
         ph->count -= 2;
         chars_put_byte(ph, 'i');
     } else if (ph->count > 0 && ph->data[ph->count - 1] == 'I') {
-        char prev = ph->count >= 2 ? ph->data[ph->count - 2] : 0;
-        static const char diphthong_before[] = "eaOoU";
-        bool part_of_diph = prev != 0
-            && strchr(diphthong_before, prev) != NULL;
-        if (prev != '\'' && prev != ',' && !part_of_diph) {
-            static const char all_vowels[] = "aAeEiIOUV03o";
-            int vowel_count = 0;
-            for (size_t i = 0; i < ph->count; i++) {
-                if (strchr(all_vowels, ph->data[i]) != NULL) {
-                    vowel_count++;
-                }
-            }
-            if (vowel_count > 1) {
-                ph->data[ph->count - 1] = 'i';
-            }
-        }
+        tense_final_bare_i(ph);
     }
 }
 
@@ -3377,75 +4041,68 @@ static void strip_morpheme_schwa_r(struct chars * ph) {
     }
 }
 
-// Step 4: Bare schwa '@' before 'r' -> r-colored schwa '3' (ɚ).
-// Pre-pass: 'a#r' -> '@r' (unstressed 'a' before 'r' behaves like
-// schwa-before-r). The 'r' is absorbed into '3' when followed by
-// a consonant / end-of-word, OR when '@' was unstressed-prefixed
-// ('%'/'=' immediately before).
-static void apply_bare_schwa_to_rhotic(struct chars * ph) {
-    // Pre-pass: a#r -> @r.
+// Unstressed 'a' before 'r' behaves like a schwa: "a#r" -> "@r".
+
+static void collapse_a_hash_before_r(struct chars * ph) {
     for (size_t i = 0; i + 2 < ph->count; i++) {
-        if (ph->data[i] == 'a'
-            && ph->data[i + 1] == '#'
+        if (ph->data[i] == 'a' && ph->data[i + 1] == '#'
             && ph->data[i + 2] == 'r') {
             ph->data[i] = '@';
-            // Erase '#' (index i+1).
-            memmove(ph->data + i + 1, ph->data + i + 2,
-                    ph->count - i - 2);
-            ph->count -= 1;
-            ph->data[ph->count] = '\0';
+            chars_erase_at(ph, i + 1);
         }
     }
-    // Main pass.
+}
+
+// The first non-marker position at or after `from`.
+
+static size_t skip_stress_markers(const struct chars * ph,
+                                  size_t from) {
+    size_t pos = from;
+    while (pos < ph->count
+           && (ph->data[pos] == '\'' || ph->data[pos] == ','
+            || ph->data[pos] == '%' || ph->data[pos] == '=')) {
+        pos++;
+    }
+    return pos;
+}
+
+// A schwa that closes a diphthong keeps its own quality.
+
+static bool schwa_closes_diphthong(const struct chars * ph,
+                                   size_t rpos) {
+    return rpos > 0 && (ph->data[rpos - 1] == 'o'
+        || ph->data[rpos - 1] == 'A' || ph->data[rpos - 1] == 'U'
+        || ph->data[rpos - 1] == 'O' || ph->data[rpos - 1] == 'e'
+        || ph->data[rpos - 1] == 'i' || ph->data[rpos - 1] == 'I'
+        || ph->data[rpos - 1] == 'a');
+}
+
+// The 'r' is absorbed into the rhotic schwa unless a vowel follows it,
+// and absorbed anyway when the schwa was unstressed-prefixed.
+
+static bool absorbs_r(const struct chars * ph, size_t rpos,
+                      size_t r_pos) {
+    static const char vowel_starts[] = "aAeEiIoOuUV03@";
+    size_t after_r = skip_stress_markers(ph, r_pos + 1);
+    bool next_is_vowel = after_r < ph->count
+        && strchr(vowel_starts, ph->data[after_r]) != NULL;
+    bool unstressed_pre = rpos > 0
+        && (ph->data[rpos - 1] == '=' || ph->data[rpos - 1] == '%');
+    return !next_is_vowel || unstressed_pre;
+}
+
+// Step 4: Bare schwa '@' before 'r' -> r-colored schwa '3' (schwar).
+
+static void apply_bare_schwa_to_rhotic(struct chars * ph) {
+    collapse_a_hash_before_r(ph);
     for (size_t rpos = 0; rpos + 1 < ph->count; rpos++) {
         if (ph->data[rpos] == '@') {
-            // Find 'r' after '@', skipping stress/modifier marks.
-            size_t r_pos = rpos + 1;
-            while (r_pos < ph->count
-                   && (ph->data[r_pos] == '\''
-                    || ph->data[r_pos] == ','
-                    || ph->data[r_pos] == '%'
-                    || ph->data[r_pos] == '=')) {
-                r_pos++;
-            }
-            if (r_pos < ph->count && ph->data[r_pos] == 'r') {
-                bool is_diphthong = rpos > 0 && (
-                    ph->data[rpos - 1] == 'o'
-                 || ph->data[rpos - 1] == 'A'
-                 || ph->data[rpos - 1] == 'U'
-                 || ph->data[rpos - 1] == 'O'
-                 || ph->data[rpos - 1] == 'e'
-                 || ph->data[rpos - 1] == 'i'
-                 || ph->data[rpos - 1] == 'I'
-                 || ph->data[rpos - 1] == 'a');
-                if (!is_diphthong) {
-                    ph->data[rpos] = '3';
-                    // Absorb 'r' if followed by a consonant / end,
-                    // OR if '@' was unstressed-prefixed.
-                    size_t after_r = r_pos + 1;
-                    while (after_r < ph->count
-                           && (ph->data[after_r] == '%'
-                            || ph->data[after_r] == '='
-                            || ph->data[after_r] == '\''
-                            || ph->data[after_r] == ',')) {
-                        after_r++;
-                    }
-                    static const char vowel_starts[] =
-                        "aAeEiIoOuUV03@";
-                    bool next_is_vowel = after_r < ph->count
-                        && strchr(vowel_starts,
-                                  ph->data[after_r]) != NULL;
-                    bool unstressed_pre = rpos > 0
-                        && (ph->data[rpos - 1] == '='
-                         || ph->data[rpos - 1] == '%');
-                    if (!next_is_vowel || unstressed_pre) {
-                        // Absorb 'r' into '3'.
-                        memmove(ph->data + r_pos,
-                                ph->data + r_pos + 1,
-                                ph->count - r_pos - 1);
-                        ph->count -= 1;
-                        ph->data[ph->count] = '\0';
-                    }
+            size_t r_pos = skip_stress_markers(ph, rpos + 1);
+            if (r_pos < ph->count && ph->data[r_pos] == 'r'
+                && !schwa_closes_diphthong(ph, rpos)) {
+                ph->data[rpos] = '3';
+                if (absorbs_r(ph, rpos, r_pos)) {
+                    chars_erase_at(ph, r_pos);
                 }
             }
         }
@@ -3454,52 +4111,63 @@ static void apply_bare_schwa_to_rhotic(struct chars * ph) {
 
 // Step 4b: Linking-R. After '3', '3:', 'U@', or 'A@', when followed
 // (across stress markers) by a vowel-starting code, insert 'r'.
-static void apply_linking_r(struct chars * ph) {
-    static const char vowel_starts[] = "aAeEiIoOuUV03@";
-    for (size_t rpos = 0; rpos < ph->count; rpos++) {
-        int code_len = 0;
-        if (ph->data[rpos] == '3') {
-            code_len = 1;
-            if (rpos + 1 < ph->count && ph->data[rpos + 1] == ':') {
-                code_len = 2;
-            }
-        } else if (ph->data[rpos] == 'U'
-                   && rpos + 1 < ph->count
-                   && ph->data[rpos + 1] == '@') {
-            code_len = 2;
-        } else if (ph->data[rpos] == 'A'
-                   && rpos + 1 < ph->count
-                   && ph->data[rpos + 1] == '@') {
+// The rhotic vowels that can take a linking r: 3, 3:, U@, A@.
+
+static int32_t rhotic_code_len(const struct chars * ph, size_t rpos) {
+    int32_t code_len = 0;
+    if (ph->data[rpos] == '3') {
+        code_len = 1;
+        if (rpos + 1 < ph->count && ph->data[rpos + 1] == ':') {
             code_len = 2;
         }
-        if (code_len > 0) {
-            size_t after_code = rpos + (size_t)code_len;
-            bool already_r = after_code < ph->count
-                && ph->data[after_code] == 'r';
-            if (!already_r) {
-                size_t after = after_code;
-                while (after < ph->count
-                       && (ph->data[after] == '\''
-                        || ph->data[after] == ','
-                        || ph->data[after] == '%'
-                        || ph->data[after] == '=')) {
-                    after++;
-                }
-                bool next_vowel = after < ph->count
-                    && strchr(vowel_starts,
-                              ph->data[after]) != NULL;
-                if (next_vowel) {
-                    // Insert 'r' at after_code.
-                    chars_grow(ph, ph->count + 2);
-                    memmove(ph->data + after_code + 1,
-                            ph->data + after_code,
-                            ph->count - after_code);
-                    ph->data[after_code] = 'r';
-                    ph->count += 1;
-                    ph->data[ph->count] = '\0';
-                    rpos += (size_t)code_len;
-                }
-            }
+    } else if (ph->data[rpos] == 'U'
+               && rpos + 1 < ph->count
+               && ph->data[rpos + 1] == '@') {
+        code_len = 2;
+    } else if (ph->data[rpos] == 'A'
+               && rpos + 1 < ph->count
+               && ph->data[rpos + 1] == '@') {
+        code_len = 2;
+    }
+    return code_len;
+}
+
+// Stress markers may stand between the rhotic and the vowel that
+// triggers the link.
+
+static bool vowel_follows_markers(const struct chars * ph,
+                                  size_t after_code) {
+    static const char vowel_starts[] = "aAeEiIoOuUV03@";
+    size_t after = after_code;
+    while (after < ph->count
+           && (ph->data[after] == '\''
+            || ph->data[after] == ','
+            || ph->data[after] == '%'
+            || ph->data[after] == '=')) {
+        after++;
+    }
+    return after < ph->count
+        && strchr(vowel_starts, ph->data[after]) != NULL;
+}
+
+static void insert_linking_r(struct chars * ph, size_t at) {
+    chars_grow(ph, ph->count + 2);
+    memmove(ph->data + at + 1, ph->data + at, ph->count - at);
+    ph->data[at] = 'r';
+    ph->count += 1;
+    ph->data[ph->count] = '\0';
+}
+
+static void apply_linking_r(struct chars * ph) {
+    for (size_t rpos = 0; rpos < ph->count; rpos++) {
+        int32_t code_len = rhotic_code_len(ph, rpos);
+        size_t after_code = rpos + (size_t)code_len;
+        bool already_r = after_code < ph->count
+            && ph->data[after_code] == 'r';
+        if (code_len > 0 && !already_r
+            && vowel_follows_markers(ph, after_code)) {
+            insert_linking_r(ph, after_code);
+            rpos += (size_t)code_len;
         }
     }
 }
@@ -3529,6 +4197,31 @@ static bool is_tion_terminal_after_n(const char * ph, size_t pn,
 
 // Scan up to 10 chars after S for the -tion '@n' pattern with a
 // terminal tail.
+// Inner scan up to 4 chars (ki2 < ki + 4) for the 'n'/'N' of
+// "-tion", with modifier skip-set {-, =, %} (matches .cpp).
+
+static bool schwa_n_starts_tion(const char * ph, size_t pn,
+                                size_t ki) {
+    bool found_tion = false;
+    size_t ki2 = ki + 1;
+    bool n_found = false;
+    bool n_stop = false;
+    while (ki2 < pn && ki2 < ki + 4 && !n_found && !n_stop) {
+        char c2 = ph[ki2];
+        bool c2_modifier = (c2 == '-' || c2 == '=' || c2 == '%');
+        if (c2 == 'n' || c2 == 'N') {
+            if (is_tion_terminal_after_n(ph, pn, ki2 + 1)) {
+                found_tion = true;
+            }
+            n_found = true;
+        } else if (!c2_modifier) {
+            n_stop = true;
+        }
+        ki2++;
+    }
+    return found_tion;
+}
+
 static bool has_tion_after_s(const char * ph, size_t pn,
                              size_t after_S) {
     bool found_tion = false;
@@ -3539,27 +4232,7 @@ static bool has_tion_after_s(const char * ph, size_t pn,
         bool is_modifier = (c == '=' || c == '%' || c == '-'
                             || c == '\'' || c == ',');
         if (c == '@') {
-            // Inner scan up to 4 chars (ki2 < ki + 4) for 'n'/'N'
-            // with modifier skip-set {-, =, %} (matches .cpp).
-            size_t ki2 = ki + 1;
-            bool n_found = false;
-            bool n_stop = false;
-            while (ki2 < pn && ki2 < ki + 4
-                   && !n_found && !n_stop) {
-                char c2 = ph[ki2];
-                bool c2_modifier = (c2 == '-' || c2 == '='
-                                    || c2 == '%');
-                if (c2 == 'n' || c2 == 'N') {
-                    if (is_tion_terminal_after_n(ph, pn,
-                                                 ki2 + 1)) {
-                        found_tion = true;
-                    }
-                    n_found = true;
-                } else if (!c2_modifier) {
-                    n_stop = true;
-                }
-                ki2++;
-            }
+            found_tion = schwa_n_starts_tion(ph, pn, ki);
             stop = true;  // saw '@'; stop outer scan whether matched
         } else if (!is_modifier) {
             stop = true;  // non-modifier, non-@: not a -tion suffix
@@ -3588,7 +4261,7 @@ static bool primary_already_on_vowel(const char * ph, size_t pn,
     static const char vowel_chars[] = "aAeEiIoOuUV03@";
     bool primary = false;
     bool stop = false;
-    int bi = (int)vowel_pos - 1;
+    int32_t bi = (int32_t)vowel_pos - 1;
     while (bi >= 0 && !primary && !stop) {
         char bc = ph[bi];
         if (bc == '\'') {
@@ -3634,7 +4307,7 @@ static void move_stress_to_vowel(struct chars * ph, size_t vowel_pos) {
 // the count + last-vowel-position out.
 static void count_vowels_before_unit_aware(const char * ph, size_t pn,
                                            size_t end,
-                                           int * out_count,
+                                           int32_t * out_count,
                                            size_t * out_last_pos) {
     static const char * const mc[] = {
         "aI@3","aU@r","i@3r","aI@","aI3","aU@","i@3",
@@ -3659,7 +4332,7 @@ static void count_vowels_before_unit_aware(const char * ph, size_t pn,
         } else {
             const char * code = NULL;
             size_t code_len = 0;
-            for (int mi = 0; mc[mi] != NULL && code == NULL; mi++) {
+            for (int32_t mi = 0; mc[mi] != NULL && code == NULL; mi++) {
                 size_t mcl = strlen(mc[mi]);
                 if (vi + mcl <= end
                     && memcmp(ph + vi, mc[mi], mcl) == 0) {
@@ -3683,7 +4356,7 @@ static void count_vowels_before_unit_aware(const char * ph, size_t pn,
 static void apply_tion_stress_fix(struct chars * ph) {
     size_t s_pos = find_tion_suffix_s_pos(ph->data, ph->count);
     if (s_pos != (size_t)-1) {
-        int v_count = 0;
+        int32_t v_count = 0;
         size_t vowel_pos = (size_t)-1;
         count_vowels_before_unit_aware(ph->data, ph->count, s_pos,
                                        &v_count, &vowel_pos);
@@ -3747,15 +4420,20 @@ static void apply_ology_stress_fix(struct chars * ph) {
 }
 
 // "-ic"/"-ical"/"-ics" stress fix.
-static void apply_ic_stress_fix(struct chars * ph) {
-    size_t ik_pos = (size_t)-1;
-    size_t k_pos = (size_t)-1;
-    for (size_t i = ph->count; i > 0; i--) {
-        if (ph->data[i - 1] == 'k') {
-            k_pos = i - 1;
-            break;
-        }
+static size_t last_k_pos(const struct chars * ph) {
+    size_t at = (size_t)-1;
+    for (size_t i = ph->count; i > 0 && at == (size_t)-1; i--) {
+        if (ph->data[i - 1] == 'k') { at = i - 1; }
     }
+    return at;
+}
+
+// The "I" of an unstressed "-Ik" suffix, or (size_t)-1. k_pos == 1
+// underflows to that same sentinel, which is what skips the fix.
+
+static size_t unstressed_ik_pos(const struct chars * ph) {
+    size_t ik_pos = (size_t)-1;
+    size_t k_pos = last_k_pos(ph);
     if (k_pos != (size_t)-1 && k_pos >= 1
         && ph->data[k_pos - 1] == 'I') {
         bool i_unstressed = (k_pos >= 2
@@ -3766,8 +4444,13 @@ static void apply_ic_stress_fix(struct chars * ph) {
             ik_pos = k_pos - 2;
         }
     }
+    return ik_pos;
+}
+
+static void apply_ic_stress_fix(struct chars * ph) {
+    size_t ik_pos = unstressed_ik_pos(ph);
     if (ik_pos != (size_t)-1) {
-        int vowels_before = 0;
+        int32_t vowels_before = 0;
         size_t last_vowel_pos = (size_t)-1;
         count_vowels_before_unit_aware(ph->data, ph->count, ik_pos,
                                        &vowels_before,
@@ -3861,39 +4544,37 @@ static void reduce_v_between_sec_and_primary(struct chars * ph) {
     }
 }
 
+// An 'a' before I, U, :, @ or # is already the head of a longer
+// code, so it is not a bare 'a'.
+
+static bool a_starts_longer_code(const struct chars * ph, size_t pi) {
+    return pi + 1 < ph->count
+        && (ph->data[pi + 1] == 'I'
+         || ph->data[pi + 1] == 'U'
+         || ph->data[pi + 1] == ':'
+         || ph->data[pi + 1] == '@'
+         || ph->data[pi + 1] == '#');
+}
+
 // Step 5.5c2: bare 'a' -> 'a#' between '\'' and ',' (rule-derived).
 static void reduce_a_between_primary_and_sec(struct chars * ph,
                                              bool rule_derived) {
-    if (!rule_derived) { return; }
-    char * prim = memchr(ph->data, '\'', ph->count);
-    char * sec  = memchr(ph->data, ',',  ph->count);
+    char * prim = rule_derived
+        ? memchr(ph->data, '\'', ph->count) : NULL;
+    char * sec  = rule_derived
+        ? memchr(ph->data, ',',  ph->count) : NULL;
     if (prim != NULL && sec != NULL && prim < sec) {
         size_t pp = (size_t)(prim - ph->data);
         size_t sp = (size_t)(sec  - ph->data);
         for (size_t pi = pp + 1; pi < sp; pi++) {
-            if (ph->data[pi] == 'a') {
-                bool is_diphthong_start = pi + 1 < ph->count
-                    && (ph->data[pi + 1] == 'I'
-                     || ph->data[pi + 1] == 'U'
-                     || ph->data[pi + 1] == ':'
-                     || ph->data[pi + 1] == '@'
-                     || ph->data[pi + 1] == '#');
-                if (!is_diphthong_start) {
-                    bool stressed = pi > 0
-                        && (ph->data[pi - 1] == '\''
-                         || ph->data[pi - 1] == ',');
-                    if (!stressed) {
-                        chars_grow(ph, ph->count + 2);
-                        memmove(ph->data + pi + 2,
-                                ph->data + pi + 1,
-                                ph->count - pi - 1);
-                        ph->data[pi + 1] = '#';
-                        ph->count += 1;
-                        ph->data[ph->count] = '\0';
-                        sp++;
-                        pi++;
-                    }
-                }
+            bool stressed = pi > 0
+                && (ph->data[pi - 1] == '\''
+                 || ph->data[pi - 1] == ',');
+            if (ph->data[pi] == 'a' && !a_starts_longer_code(ph, pi)
+                && !stressed) {
+                insert_marker_at(ph, pi + 1, '#');
+                sp++;
+                pi++;
             }
         }
     }
@@ -4007,14 +4688,34 @@ static void reduce_zero_hash_before_primary(struct chars * ph) {
 }
 
 // Step 5.5f: bare '0' -> '@' pre-tonic, standalone rule output.
+// A rule-derived, unmarked bare '0' that is not the word's first
+// vowel reduces to schwa.
+
+static bool bare_zero_reduces(const struct chars * ph, size_t pi,
+                              const bool * rba, size_t rba_n) {
+    static const char vow[] = "aAeEiIoOuUV03@";
+    bool marked = pi > 0
+        && (ph->data[pi - 1] == '\''
+         || ph->data[pi - 1] == ','
+         || ph->data[pi - 1] == '%'
+         || ph->data[pi - 1] == '=');
+    bool is_standalone = pi < rba_n && rba[pi];
+    bool has_prior_vowel = false;
+    for (size_t k = 0; k < pi && !has_prior_vowel; k++) {
+        if (strchr(vow, ph->data[k]) != NULL) {
+            has_prior_vowel = true;
+        }
+    }
+    return !marked && is_standalone && has_prior_vowel;
+}
+
 static void reduce_bare_zero_before_primary(struct chars * ph,
                                             const bool * rba,
                                             size_t rba_n) {
-    if (rba_n == 0) { return; }
-    char * prim = memchr(ph->data, '\'', ph->count);
+    char * prim = rba_n > 0
+        ? memchr(ph->data, '\'', ph->count) : NULL;
     if (prim != NULL) {
         size_t pp = (size_t)(prim - ph->data);
-        static const char vow[] = "aAeEiIoOuUV03@";
         for (size_t pi = 0; pi < pp; pi++) {
             if (ph->data[pi] == '0') {
                 bool is_variant = pi + 1 < ph->count
@@ -4022,22 +4723,8 @@ static void reduce_bare_zero_before_primary(struct chars * ph,
                      || ph->data[pi + 1] == '2');
                 if (is_variant) {
                     pi++;
-                } else {
-                    bool marked = pi > 0
-                        && (ph->data[pi - 1] == '\''
-                         || ph->data[pi - 1] == ','
-                         || ph->data[pi - 1] == '%'
-                         || ph->data[pi - 1] == '=');
-                    bool is_standalone = pi < rba_n && rba[pi];
-                    bool has_prior_vowel = false;
-                    for (size_t k = 0; k < pi && !has_prior_vowel; k++) {
-                        if (strchr(vow, ph->data[k]) != NULL) {
-                            has_prior_vowel = true;
-                        }
-                    }
-                    if (!marked && is_standalone && has_prior_vowel) {
-                        ph->data[pi] = '@';
-                    }
+                } else if (bare_zero_reduces(ph, pi, rba, rba_n)) {
+                    ph->data[pi] = '@';
                 }
             }
         }
@@ -4045,8 +4732,27 @@ static void reduce_bare_zero_before_primary(struct chars * ph,
 }
 
 // Step 5.5g: bare 'E' -> '@' pre-tonic after '%'-syll + nasal 'n'.
-static void reduce_e_pre_tonic_after_pct_nasal(struct chars * ph) {
+// The last '%' before pi opens a syllable with a vowel of its own.
+
+static bool pct_syllable_before(const struct chars * ph, size_t pi) {
     static const char vow[] = "aAeEiIoOuUV03@";
+    size_t pct_pos = (size_t)-1;
+    for (size_t j = 0; j < pi; j++) {
+        if (ph->data[j] == '%') { pct_pos = j; }
+    }
+    bool has_vowel_between = false;
+    if (pct_pos != (size_t)-1) {
+        for (size_t k = pct_pos + 1;
+             k < pi && !has_vowel_between; k++) {
+            if (strchr(vow, ph->data[k]) != NULL) {
+                has_vowel_between = true;
+            }
+        }
+    }
+    return has_vowel_between;
+}
+
+static void reduce_e_pre_tonic_after_pct_nasal(struct chars * ph) {
     char * prim = memchr(ph->data, '\'', ph->count);
     if (prim != NULL) {
         size_t pp = (size_t)(prim - ph->data);
@@ -4060,22 +4766,9 @@ static void reduce_e_pre_tonic_after_pct_nasal(struct chars * ph) {
                 } else if (ph->data[pi - 1] != '\''
                     && ph->data[pi - 1] != ','
                     && pi + 1 < ph->count
-                    && ph->data[pi + 1] == 'n') {
-                    // Last '%' before this 'E'.
-                    size_t pct_pos = (size_t)-1;
-                    for (size_t j = 0; j < pi; j++) {
-                        if (ph->data[j] == '%') { pct_pos = j; }
-                    }
-                    if (pct_pos != (size_t)-1) {
-                        bool has_vowel_between = false;
-                        for (size_t k = pct_pos + 1;
-                             k < pi && !has_vowel_between; k++) {
-                            if (strchr(vow, ph->data[k]) != NULL) {
-                                has_vowel_between = true;
-                            }
-                        }
-                        if (has_vowel_between) { ph->data[pi] = '@'; }
-                    }
+                    && ph->data[pi + 1] == 'n'
+                    && pct_syllable_before(ph, pi)) {
+                    ph->data[pi] = '@';
                 }
             }
         }
@@ -4083,76 +4776,89 @@ static void reduce_e_pre_tonic_after_pct_nasal(struct chars * ph) {
 }
 
 // Step 5b: post-stress 'I' -> 'i' before '@L' (syllabic L).
-static void post_stress_i_before_syllabic_l(struct chars * ph) {
-    char * stress = memchr(ph->data, '\'', ph->count);
-    if (stress == NULL) { return; }
-    size_t sp = (size_t)(stress - ph->data);
-    // Find @L.
-    size_t al_pos = (size_t)-1;
-    for (size_t i = 0; i + 1 < ph->count; i++) {
-        if (ph->data[i] == '@' && ph->data[i + 1] == 'L') {
-            al_pos = i;
-            break;
+// Position of the first "@L" (syllabic l), or ph->count when absent.
+
+static size_t find_at_l_pos(const struct chars * ph) {
+    size_t at = ph->count;
+    for (size_t i = 0; i + 1 < ph->count && at == ph->count; i++) {
+        if (ph->data[i] == '@' && ph->data[i + 1] == 'L') { at = i; }
+    }
+    return at;
+}
+
+static bool any_vowel_between(const struct chars * ph, size_t from,
+                              size_t to) {
+    static const char step5b_vowels[] = "aAeEiIoOuUV03@";
+    bool seen = false;
+    for (size_t k = from; k < to && !seen; k++) {
+        if (strchr(step5b_vowels, ph->data[k]) != NULL) {
+            seen = true;
         }
     }
-    if (al_pos == (size_t)-1 || al_pos <= sp) { return; }
-    static const char step5b_vowels[] = "aAeEiIoOuUV03@";
+    return seen;
+}
+
+// A plain 'I' -- not I2, not I# -- sitting directly before the
+// syllabic l, and not itself the tail of a diphthong.
+
+static bool is_tensable_i(const struct chars * ph, size_t pi) {
     static const char diph_before[] = "aAeEoOuU";
-    for (size_t pi = sp + 1; pi < al_pos; pi++) {
-        bool is_plain_I = ph->data[pi] == 'I'
-            && !(pi + 1 < ph->count
-                 && (ph->data[pi + 1] == '2'
-                  || ph->data[pi + 1] == '#'));
-        if (is_plain_I) {
-            bool seen_stressed_vowel = false;
-            for (size_t k = sp + 1; k < pi && !seen_stressed_vowel; k++) {
-                if (strchr(step5b_vowels, ph->data[k]) != NULL) {
-                    seen_stressed_vowel = true;
-                }
-            }
-            if (seen_stressed_vowel) {
-                bool directly_before_al = pi + 2 < ph->count
-                    && ph->data[pi + 1] == '@'
-                    && ph->data[pi + 2] == 'L';
-                bool part_of_diph = pi > 0
-                    && strchr(diph_before, ph->data[pi - 1]) != NULL;
-                if (directly_before_al && !part_of_diph) {
-                    ph->data[pi] = 'i';
-                }
+    bool is_plain_I = ph->data[pi] == 'I'
+        && !(pi + 1 < ph->count
+             && (ph->data[pi + 1] == '2'
+              || ph->data[pi + 1] == '#'));
+    bool directly_before_al = pi + 2 < ph->count
+        && ph->data[pi + 1] == '@'
+        && ph->data[pi + 2] == 'L';
+    bool part_of_diph = pi > 0
+        && strchr(diph_before, ph->data[pi - 1]) != NULL;
+    return is_plain_I && directly_before_al && !part_of_diph;
+}
+
+static void post_stress_i_before_syllabic_l(struct chars * ph) {
+    char * stress = memchr(ph->data, '\'', ph->count);
+    size_t sp = stress != NULL ? (size_t)(stress - ph->data) : 0;
+    size_t al_pos = stress != NULL ? find_at_l_pos(ph) : ph->count;
+    if (al_pos < ph->count && al_pos > sp) {
+        for (size_t pi = sp + 1; pi < al_pos; pi++) {
+            if (is_tensable_i(ph, pi)
+                && any_vowel_between(ph, sp + 1, pi)) {
+                ph->data[pi] = 'i';
             }
         }
     }
 }
 
 // Step 5c: 3: -> 3 in pre-tonic / inter-stress positions.
+// A 3: shortens when it is neither stressed nor explicitly
+// unstressed, has a vowel before it, and is either pre-tonic or
+// followed by a secondary the primary's own '%' does not cancel.
+
+static bool long_3_should_shorten(const struct chars * ph, size_t pi,
+                                  size_t prime_pos) {
+    bool is_stressed = pi > 0
+        && (ph->data[pi - 1] == '\''
+         || ph->data[pi - 1] == ',');
+    bool has_explicit_unstress = pi > 0 && ph->data[pi - 1] == '%';
+    bool is_pretonic = pi + 2 < prime_pos;
+    bool has_secondary_after = memchr(
+        ph->data + pi + 2, ',', ph->count - pi - 2) != NULL;
+    bool pct_before_primary = prime_pos > 0
+        && ph->data[prime_pos - 1] == '%';
+    return !is_stressed && !has_explicit_unstress
+        && any_vowel_between(ph, 0, pi)
+        && (is_pretonic
+         || (has_secondary_after && !pct_before_primary));
+}
+
 static void reduce_3_long_to_short(struct chars * ph) {
     char * stress = memchr(ph->data, '\'', ph->count);
-    if (stress == NULL) { return; }
-    size_t prime_pos = (size_t)(stress - ph->data);
-    static const char vow[] = "aAeEiIoOuUV03@";
+    size_t prime_pos = stress != NULL
+        ? (size_t)(stress - ph->data) : 0;
     size_t pi = 0;
-    while (pi + 1 < ph->count) {
+    while (stress != NULL && pi + 1 < ph->count) {
         if (ph->data[pi] == '3' && ph->data[pi + 1] == ':') {
-            bool is_stressed = pi > 0
-                && (ph->data[pi - 1] == '\''
-                 || ph->data[pi - 1] == ',');
-            bool has_explicit_unstress = pi > 0
-                && ph->data[pi - 1] == '%';
-            bool is_pretonic = pi + 2 < prime_pos;
-            bool has_secondary_after = memchr(
-                ph->data + pi + 2, ',', ph->count - pi - 2) != NULL;
-            bool pct_before_primary = prime_pos > 0
-                && ph->data[prime_pos - 1] == '%';
-            bool has_vowel_before = false;
-            for (size_t k = 0; k < pi && !has_vowel_before; k++) {
-                if (strchr(vow, ph->data[k]) != NULL) {
-                    has_vowel_before = true;
-                }
-            }
-            if (!is_stressed && !has_explicit_unstress
-                && has_vowel_before
-                && (is_pretonic
-                 || (has_secondary_after && !pct_before_primary))) {
+            if (long_3_should_shorten(ph, pi, prime_pos)) {
                 memmove(ph->data + pi + 1,
                         ph->data + pi + 2,
                         ph->count - pi - 2);
@@ -4168,10 +4874,9 @@ static void reduce_3_long_to_short(struct chars * ph) {
     }
 }
 
-// Step 6: American English flap rule (/t/ -> [*] between a vowel
-// and an unstressed vowel). De-flap '*3n/m/N' -> 't3n/m/N' first.
-static void apply_flap_rule(struct chars * ph) {
-    // De-tap pre-pass.
+// '*3n/m/N' is a de-flapped sequence, not a flap.
+
+static void deflap_before_syllabic_nasal(struct chars * ph) {
     for (size_t pi = 0; pi + 2 < ph->count; pi++) {
         if (ph->data[pi] == '*' && ph->data[pi + 1] == '3'
             && (ph->data[pi + 2] == 'n'
@@ -4180,57 +4885,81 @@ static void apply_flap_rule(struct chars * ph) {
             ph->data[pi] = 't';
         }
     }
-    static const char vowel_chars[] = "aAeEIiOUVu03@oY";
+}
+
+static const char FLAP_VOWELS[] = "aAeEIiOUVu03@oY";
+
+static bool flap_prev_is_vowel(const struct chars * ph, size_t pi) {
+    char prev = ph->data[pi - 1];
+    return prev == ':' || prev == '#' || prev == 'r'
+        || strchr(FLAP_VOWELS, prev) != NULL
+        || (prev == '2' && pi >= 2
+            && strchr(FLAP_VOWELS, ph->data[pi - 2]) != NULL)
+        || (prev == 'L' && pi >= 2 && ph->data[pi - 2] == '@');
+}
+
+// After a '%' or '=' marker the vowel is unstressed unless it leads
+// into a syllabic 'n' that is not "3:".
+
+static bool flap_after_marker(const struct chars * ph,
+                              size_t nxt_pos) {
+    bool r = false;
+    if (nxt_pos + 1 < ph->count
+        && strchr(FLAP_VOWELS, ph->data[nxt_pos + 1]) != NULL) {
+        bool v2_long = nxt_pos + 2 < ph->count
+            && ph->data[nxt_pos + 2] == ':';
+        int32_t n2p = v2_long ? (int32_t)(nxt_pos + 3) : (int32_t)(nxt_pos + 2);
+        bool n2_n = n2p < (int32_t)ph->count && ph->data[n2p] == 'n';
+        bool v2_3c = ph->data[nxt_pos + 1] == '3' && v2_long;
+        r = !(n2_n && !v2_3c);
+    }
+    return r;
+}
+
+static bool flap_before_vowel(const struct chars * ph, size_t nxt_pos,
+                              char nxt) {
+    bool is_3colon = nxt == '3' && nxt_pos + 1 < ph->count
+        && ph->data[nxt_pos + 1] == ':';
+    bool vowel_is_long = nxt_pos + 1 < ph->count
+        && ph->data[nxt_pos + 1] == ':';
+    int32_t next2_pos = vowel_is_long ? (int32_t)(nxt_pos + 2)
+                                  : (int32_t)(nxt_pos + 1);
+    if (nxt == '@' && next2_pos < (int32_t)ph->count
+        && ph->data[next2_pos] == 'L') {
+        next2_pos++;
+    }
+    bool next2_is_n = next2_pos < (int32_t)ph->count
+        && ph->data[next2_pos] == 'n';
+    return !(next2_is_n && !is_3colon);
+}
+
+static bool flap_next_is_unstressed_vowel(const struct chars * ph,
+                                          size_t pi) {
+    size_t nxt_pos = ph->data[pi + 1] == '#' ? pi + 2 : pi + 1;
+    char nxt = nxt_pos < ph->count ? ph->data[nxt_pos] : 0;
+    bool r = false;
+    if (nxt == '%' || nxt == '=') {
+        r = flap_after_marker(ph, nxt_pos);
+    } else if (nxt != 0 && nxt != '\'' && nxt != ','
+               && strchr(FLAP_VOWELS, nxt) != NULL) {
+        r = flap_before_vowel(ph, nxt_pos, nxt);
+    }
+    return r;
+}
+
+// Step 6: American English flap rule (/t/ -> [*] between a vowel
+// and an unstressed vowel). De-flap '*3n/m/N' -> 't3n/m/N' first.
+
+static void apply_flap_rule(struct chars * ph) {
+    deflap_before_syllabic_nasal(ph);
     for (size_t pi = 1; pi + 1 < ph->count; pi++) {
-        if (ph->data[pi] == 't') {
-            char prev = ph->data[pi - 1];
-            bool prev_vowel = prev == ':' || prev == '#' || prev == 'r'
-                || strchr(vowel_chars, prev) != NULL
-                || (prev == '2' && pi >= 2
-                    && strchr(vowel_chars, ph->data[pi - 2]) != NULL)
-                || (prev == 'L' && pi >= 2 && ph->data[pi - 2] == '@');
-            if (prev_vowel) {
-                size_t nxt_pos = ph->data[pi + 1] == '#'
-                    ? pi + 2 : pi + 1;
-                char nxt = nxt_pos < ph->count
-                    ? ph->data[nxt_pos] : 0;
-                bool next_unstressed_vowel = false;
-                if (nxt == '%' || nxt == '=') {
-                    if (nxt_pos + 1 < ph->count
-                        && strchr(vowel_chars,
-                                  ph->data[nxt_pos + 1]) != NULL) {
-                        bool v2_long = nxt_pos + 2 < ph->count
-                            && ph->data[nxt_pos + 2] == ':';
-                        int n2p = v2_long ? (int)(nxt_pos + 3)
-                                          : (int)(nxt_pos + 2);
-                        bool n2_n = n2p < (int)ph->count
-                            && ph->data[n2p] == 'n';
-                        bool v2_3c = ph->data[nxt_pos + 1] == '3'
-                            && v2_long;
-                        next_unstressed_vowel = !(n2_n && !v2_3c);
-                    }
-                } else if (nxt != 0 && nxt != '\'' && nxt != ','
-                    && strchr(vowel_chars, nxt) != NULL) {
-                    bool is_3colon = nxt == '3'
-                        && nxt_pos + 1 < ph->count
-                        && ph->data[nxt_pos + 1] == ':';
-                    bool vowel_is_long = nxt_pos + 1 < ph->count
-                        && ph->data[nxt_pos + 1] == ':';
-                    int next2_pos = vowel_is_long
-                        ? (int)(nxt_pos + 2) : (int)(nxt_pos + 1);
-                    if (nxt == '@' && next2_pos < (int)ph->count
-                        && ph->data[next2_pos] == 'L') {
-                        next2_pos++;
-                    }
-                    bool next2_is_n = next2_pos < (int)ph->count
-                        && ph->data[next2_pos] == 'n';
-                    next_unstressed_vowel = !(next2_is_n && !is_3colon);
-                }
-                if (next_unstressed_vowel) { ph->data[pi] = '*'; }
-            }
+        if (ph->data[pi] == 't' && flap_prev_is_vowel(ph, pi)
+            && flap_next_is_unstressed_vowel(ph, pi)) {
+            ph->data[pi] = '*';
         }
     }
 }
+
 
 // Step 6b: '-ness' suffix word-end normalisation.
 static void reduce_ness_suffix(struct chars * ph) {
@@ -4256,7 +4985,7 @@ static void reduce_ness_suffix(struct chars * ph) {
 static bool prev_syllable_is_primary(const char * ph, size_t before) {
     bool found = false;
     bool stop = false;
-    int j = (int)before - 1;
+    int32_t j = (int32_t)before - 1;
     while (j >= 0 && !found && !stop) {
         char c = ph[j];
         if (c == '\'') { found = true; }
@@ -4337,19 +5066,19 @@ static void elide_ically_schwa(struct chars * ph) {
 }
 
 // Step 6f: Add secondary stress before syllabic-n in compounds.
-static void add_compound_syllabic_n_stress(struct chars * ph) {
-    if (ph->count < 2
-        || ph->data[ph->count - 1] != '-'
-        || ph->data[ph->count - 2] != 'n') {
-        return;
-    }
-    if (memchr(ph->data, '\'', ph->count) == NULL) { return; }
+static bool ends_in_syllabic_n(const struct chars * ph) {
+    return ph->count >= 2 && ph->data[ph->count - 1] == '-'
+        && ph->data[ph->count - 2] == 'n';
+}
+
+// Stress markers are transparent to the vowel-group count.
+
+static int32_t count_vowel_groups_before(const struct chars * ph,
+                                         size_t end) {
     static const char vc[] = "aAeEiIoOuUV03@";
-    size_t sn_start = ph->count - 2;
-    if (sn_start > 0 && ph->data[sn_start - 1] == '?') { sn_start--; }
-    int vgroups = 0;
+    int32_t vgroups = 0;
     bool in_v = false;
-    for (size_t vi = 0; vi < sn_start; vi++) {
+    for (size_t vi = 0; vi < end; vi++) {
         char c = ph->data[vi];
         if (c != '\'' && c != ',' && c != '%' && c != '=') {
             if (strchr(vc, c) != NULL) {
@@ -4359,44 +5088,61 @@ static void add_compound_syllabic_n_stress(struct chars * ph) {
             }
         }
     }
-    char * prime = memchr(ph->data, '\'', ph->count);
-    size_t prime_pos = (size_t)(prime - ph->data);
-    bool has_unstressed_prefix = false;
-    for (size_t k = 0;
-         k < prime_pos && !has_unstressed_prefix; k++) {
+    return vgroups;
+}
+
+static bool has_unstressed_prefix_before(const struct chars * ph,
+                                         size_t prime_pos) {
+    bool found = false;
+    for (size_t k = 0; k < prime_pos && !found; k++) {
         if (ph->data[k] == '%' || ph->data[k] == '=') {
-            has_unstressed_prefix = true;
+            found = true;
         }
     }
-    if (vgroups >= 2 && !has_unstressed_prefix
-        && (sn_start == 0 || ph->data[sn_start - 1] != ',')) {
-        chars_grow(ph, ph->count + 2);
-        memmove(ph->data + sn_start + 1,
-                ph->data + sn_start,
-                ph->count - sn_start);
-        ph->data[sn_start] = ',';
-        ph->count += 1;
-        ph->data[ph->count] = '\0';
+    return found;
+}
+
+static void add_compound_syllabic_n_stress(struct chars * ph) {
+    char * prime = ends_in_syllabic_n(ph)
+        ? memchr(ph->data, '\'', ph->count) : NULL;
+    if (prime != NULL) {
+        size_t sn_start = ph->count - 2;
+        if (sn_start > 0 && ph->data[sn_start - 1] == '?') {
+            sn_start--;
+        }
+        int32_t vgroups = count_vowel_groups_before(ph, sn_start);
+        size_t prime_pos = (size_t)(prime - ph->data);
+        if (vgroups >= 2
+            && !has_unstressed_prefix_before(ph, prime_pos)
+            && (sn_start == 0 || ph->data[sn_start - 1] != ',')) {
+            chars_grow(ph, ph->count + 2);
+            memmove(ph->data + sn_start + 1,
+                    ph->data + sn_start,
+                    ph->count - sn_start);
+            ph->data[sn_start] = ',';
+            ph->count += 1;
+            ph->data[ph->count] = '\0';
+        }
     }
 }
 
-// Step 5.5-dim0: '0' -> '@' when middle vowel and <= UNSTRESSED.
-// Walks ph as a syllable list (multi-char-aware vowel scan), then
-// reduces right-to-left so insertion positions stay valid.
-static void reduce_zero_diminished(struct chars * ph) {
-    if (memchr(ph->data, '0', ph->count) == NULL) { return; }
-    struct syl0d {
-        size_t pos;
-        const char * code;
-        size_t code_len;
-        int level;
-    };
-    enum { MAX_SYL = 256 };
-    struct syl0d syls[MAX_SYL];
-    int n = 0;
+// One vowel of the syllable walk in reduce_zero_diminished. `code`
+// points into the phoneme buffer being walked.
+struct syl0d {
+    size_t       pos;
+    const char * code;
+    size_t       code_len;
+    int32_t      level;
+};
+
+// '@-' is a morpheme boundary, not a syllable nucleus.
+
+static int32_t collect_zero_syllables(const struct chars * ph,
+                                      struct syl0d * syls, int32_t max) {
+    int32_t n = 0;
     size_t pi = 0;
-    int cur_level = -1;
-    while (pi < ph->count && n < MAX_SYL) {
+    int32_t cur_level = -1;
+    while (pi < ph->count && n < max) {
         char c = ph->data[pi];
         if (c == '\'') { cur_level = 4; pi++; }
         else if (c == ',') { cur_level = 2; pi++; }
@@ -4407,7 +5153,6 @@ static void reduce_zero_diminished(struct chars * ph) {
             find_phoneme_code(ph->data, ph->count, pi,
                               &code, &code_len);
             if (is_vowel_code(code, code_len)) {
-                // Skip '@-' (morpheme-boundary non-syllabic).
                 if (code_len == 1 && code[0] == '@'
                     && pi + 1 < ph->count
                     && ph->data[pi + 1] == '-') {
@@ -4428,9 +5173,15 @@ static void reduce_zero_diminished(struct chars * ph) {
             }
         }
     }
-    // Right-to-left reduction.
-    for (int v = n - 1; v >= 0; v--) {
-        int vnum = v + 1;
+    return n;
+}
+
+// Right to left, so the positions already recorded stay valid.
+
+static void reduce_zero_syllables(struct chars * ph,
+                                  const struct syl0d * syls, int32_t n) {
+    for (int32_t v = n - 1; v >= 0; v--) {
+        int32_t vnum = v + 1;
         bool eligible = syls[v].code_len == 1
             && syls[v].code[0] == '0'
             && syls[v].level <= 1
@@ -4444,60 +5195,115 @@ static void reduce_zero_diminished(struct chars * ph) {
     }
 }
 
+// Step 5.5-dim0: '0' -> '@' when middle vowel and <= UNSTRESSED.
+// Walks ph as a syllable list (multi-char-aware vowel scan), then
+// reduces right-to-left so insertion positions stay valid.
+static void reduce_zero_diminished(struct chars * ph) {
+    if (memchr(ph->data, '0', ph->count) != NULL) {
+        enum { MAX_SYL = 256 };
+        struct syl0d syls[MAX_SYL];
+        int32_t n = collect_zero_syllables(ph, syls, MAX_SYL);
+        reduce_zero_syllables(ph, syls, n);
+    }
+}
+
 // Step 5a-prime: adjacent primary demotion. Demote the EARLIER of
 // two consecutive primaries (at syllable distance 1) to ','.
 static void demote_adjacent_primaries(struct chars * ph,
                                       const char * ph_in,
                                       size_t in_n) {
-    if (memchr(ph_in, '\'', in_n) == NULL) { return; }
-    struct sylp { size_t pos; bool is_primary; };
-    enum { MAX_SYL2 = 256 };
-    struct sylp syls[MAX_SYL2];
-    int n = 0;
-    size_t pi = 0;
-    bool prim = false;
-    while (pi < ph->count && n < MAX_SYL2) {
-        char c = ph->data[pi];
-        if (c == '\'') { prim = true; pi++; }
-        else if (c == ',' || c == '%' || c == '=') {
-            prim = false; pi++;
-        }
-        else {
-            const char * code = NULL;
-            size_t code_len = 0;
-            find_phoneme_code(ph->data, ph->count, pi,
-                              &code, &code_len);
-            if (is_vowel_code(code, code_len)) {
-                syls[n].pos = pi;
-                syls[n].is_primary = prim;
-                n++;
-                prim = false;
+    if (memchr(ph_in, '\'', in_n) != NULL) {
+        struct sylp { size_t pos; bool is_primary; };
+        enum { MAX_SYL2 = 256 };
+        struct sylp syls[MAX_SYL2];
+        int32_t n = 0;
+        size_t pi = 0;
+        bool prim = false;
+        while (pi < ph->count && n < MAX_SYL2) {
+            char c = ph->data[pi];
+            if (c == '\'') { prim = true; pi++; }
+            else if (c == ',' || c == '%' || c == '=') {
+                prim = false; pi++;
             }
-            pi += code_len;
+            else {
+                const char * code = NULL;
+                size_t code_len = 0;
+                find_phoneme_code(ph->data, ph->count, pi,
+                                  &code, &code_len);
+                if (is_vowel_code(code, code_len)) {
+                    syls[n].pos = pi;
+                    syls[n].is_primary = prim;
+                    n++;
+                    prim = false;
+                }
+                pi += code_len;
+            }
         }
-    }
-    // Demote earlier in each adjacent-primary pair (right-to-left).
-    for (int si = n - 1; si >= 1; si--) {
-        if (syls[si].is_primary && syls[si - 1].is_primary) {
-            if (syls[si - 1].pos > 0) {
-                size_t cp = syls[si - 1].pos - 1;
-                if (cp < ph->count && ph->data[cp] == '\'') {
-                    ph->data[cp] = ',';
-                    syls[si - 1].is_primary = false;
+        // Demote earlier in each adjacent-primary pair (right-to-left).
+        for (int32_t si = n - 1; si >= 1; si--) {
+            if (syls[si].is_primary && syls[si - 1].is_primary) {
+                if (syls[si - 1].pos > 0) {
+                    size_t cp = syls[si - 1].pos - 1;
+                    if (cp < ph->count && ph->data[cp] == '\'') {
+                        ph->data[cp] = ',';
+                        syls[si - 1].is_primary = false;
+                    }
                 }
             }
         }
     }
 }
 
-// Step 5.5c: bare 'a' -> 'a#' before primary, after the first
-// (protected) vowel. Rule-derived only.
-static void reduce_a_before_primary(struct chars * ph,
-                                    bool rule_derived) {
-    if (!rule_derived) { return; }
-    char * prim = memchr(ph->data, '\'', ph->count);
-    if (prim == NULL) { return; }
-    size_t primary_pos = (size_t)(prim - ph->data);
+// First position past the '%'-syllable's own vowel, capped at the
+// primary.
+
+static size_t pos_after_pct_vowel(const struct chars * ph,
+                                  size_t from, size_t primary_pos) {
+    size_t pct_scan = from;
+    bool past_vowel = false;
+    while (pct_scan < primary_pos && !past_vowel) {
+        const char * code = NULL;
+        size_t code_len = 0;
+        find_phoneme_code(ph->data, ph->count, pct_scan,
+                          &code, &code_len);
+        if (is_vowel_code(code, code_len)) {
+            pct_scan += code_len;
+            past_vowel = true;
+        } else {
+            pct_scan++;
+        }
+    }
+    return pct_scan;
+}
+
+// Position just past the first vowel, skipping stress markers.
+
+static size_t pos_after_first_vowel(const struct chars * ph,
+                                    size_t primary_pos) {
+    size_t gen_scan = 0;
+    bool found_first = false;
+    while (gen_scan < primary_pos && !found_first) {
+        if (ph->data[gen_scan] == '\'' || ph->data[gen_scan] == ','
+            || ph->data[gen_scan] == '%') {
+            gen_scan++;
+        } else {
+            const char * code = NULL;
+            size_t code_len = 0;
+            find_phoneme_code(ph->data, ph->count, gen_scan,
+                              &code, &code_len);
+            gen_scan += code_len;
+            found_first = is_vowel_code(code, code_len);
+        }
+    }
+    return gen_scan;
+}
+
+// Where the reduction may start: after a secondary or a '%'-syllable
+// when one precedes the primary, else after the first (protected)
+// vowel. (size_t)-1 when nothing qualifies.
+
+static size_t a_reduction_scan_start(const struct chars * ph,
+                                     size_t primary_pos) {
     char * sec = memchr(ph->data, ',', ph->count);
     char * pct = memchr(ph->data, '%', ph->count);
     size_t scan_start = (size_t)-1;
@@ -4505,70 +5311,50 @@ static void reduce_a_before_primary(struct chars * ph,
         scan_start = (size_t)(sec - ph->data) + 1;
     }
     if (pct != NULL && (size_t)(pct - ph->data) < primary_pos) {
-        size_t pct_scan = (size_t)(pct - ph->data) + 1;
-        while (pct_scan < primary_pos) {
-            const char * code = NULL;
-            size_t code_len = 0;
-            find_phoneme_code(ph->data, ph->count, pct_scan,
-                              &code, &code_len);
-            if (is_vowel_code(code, code_len)) {
-                pct_scan += code_len;
-                break;
-            }
-            pct_scan++;
-        }
-        if (pct_scan < primary_pos) {
-            if (scan_start == (size_t)-1 || pct_scan < scan_start) {
-                scan_start = pct_scan;
-            }
+        size_t pct_scan = pos_after_pct_vowel(
+            ph, (size_t)(pct - ph->data) + 1, primary_pos);
+        if (pct_scan < primary_pos
+            && (scan_start == (size_t)-1 || pct_scan < scan_start)) {
+            scan_start = pct_scan;
         }
     }
     if (scan_start == (size_t)-1) {
-        size_t gen_scan = 0;
-        bool found_first = false;
-        while (gen_scan < primary_pos && !found_first) {
-            if (ph->data[gen_scan] == '\''
-                || ph->data[gen_scan] == ','
-                || ph->data[gen_scan] == '%') {
-                gen_scan++;
-            } else {
-                const char * code = NULL;
-                size_t code_len = 0;
-                find_phoneme_code(ph->data, ph->count, gen_scan,
-                                  &code, &code_len);
-                gen_scan += code_len;
-                if (is_vowel_code(code, code_len)) {
-                    found_first = true;
-                }
-            }
-        }
+        size_t gen_scan = pos_after_first_vowel(ph, primary_pos);
         if (gen_scan < primary_pos) { scan_start = gen_scan; }
     }
-    if (scan_start != (size_t)-1) {
-        for (size_t pi = scan_start; pi < primary_pos; pi++) {
-            if (ph->data[pi] == 'a') {
-                bool is_diphthong_start = pi + 1 < ph->count
-                    && (ph->data[pi + 1] == 'I'
-                     || ph->data[pi + 1] == 'U'
-                     || ph->data[pi + 1] == ':'
-                     || ph->data[pi + 1] == '@'
-                     || ph->data[pi + 1] == '#');
-                if (!is_diphthong_start) {
-                    bool protected_vowel = pi > 0
-                        && (ph->data[pi - 1] == '\''
-                         || ph->data[pi - 1] == ','
-                         || ph->data[pi - 1] == '%');
-                    if (!protected_vowel) {
-                        chars_grow(ph, ph->count + 2);
-                        memmove(ph->data + pi + 2,
-                                ph->data + pi + 1,
-                                ph->count - pi - 1);
-                        ph->data[pi + 1] = '#';
-                        ph->count += 1;
-                        ph->data[ph->count] = '\0';
-                        primary_pos++;
-                        pi++;
-                    }
+    return scan_start;
+}
+
+// "aI", "aU", "a:", "a@" and "a#" are codes in their own right, and an
+// 'a' directly after a stress mark is protected.
+
+static bool a_is_reducible(const struct chars * ph, size_t pi) {
+    bool is_diphthong_start = pi + 1 < ph->count
+        && (ph->data[pi + 1] == 'I' || ph->data[pi + 1] == 'U'
+         || ph->data[pi + 1] == ':' || ph->data[pi + 1] == '@'
+         || ph->data[pi + 1] == '#');
+    bool protected_vowel = pi > 0
+        && (ph->data[pi - 1] == '\'' || ph->data[pi - 1] == ','
+         || ph->data[pi - 1] == '%');
+    return !is_diphthong_start && !protected_vowel;
+}
+
+// Step 5.5c: bare 'a' -> 'a#' before primary, after the first
+// (protected) vowel. Rule-derived only.
+
+static void reduce_a_before_primary(struct chars * ph,
+                                    bool rule_derived) {
+    char * prim = rule_derived
+        ? memchr(ph->data, '\'', ph->count) : NULL;
+    if (prim != NULL) {
+        size_t primary_pos = (size_t)(prim - ph->data);
+        size_t scan_start = a_reduction_scan_start(ph, primary_pos);
+        if (scan_start != (size_t)-1) {
+            for (size_t pi = scan_start; pi < primary_pos; pi++) {
+                if (ph->data[pi] == 'a' && a_is_reducible(ph, pi)) {
+                    insert_marker_at(ph, pi + 1, '#');
+                    primary_pos++;
+                    pi++;
                 }
             }
         }
@@ -4578,209 +5364,186 @@ static void reduce_a_before_primary(struct chars * ph,
 // Step 5.5b: bare 'E' -> 'I2' (or '@' before nasal 'n') across 4
 // contexts. The most complex of the late-phase reductions.
 static bool is_unstressed_code(const char * c, size_t cn) {
-    return (cn == 1 && c[0] == '@')
-        || (cn == 2 && c[0] == '@' && c[1] == '2')
-        || (cn == 2 && c[0] == '@' && c[1] == '5')
-        || (cn == 2 && c[0] == '@' && c[1] == 'L')
-        || (cn == 1 && c[0] == '3')
+    return is_schwa_family(c, cn)
         || (cn == 2 && c[0] == 'I' && c[1] == '#');
+}
+
+// "E#" and "E2" are codes in their own right, not a bare 'E'.
+
+static bool e_is_variant(const struct chars * ph, size_t pi) {
+    return pi + 1 < ph->count
+        && (ph->data[pi + 1] == '#' || ph->data[pi + 1] == '2');
+}
+
+static bool e_is_stressed(const struct chars * ph, size_t pi) {
+    return pi > 0
+        && (ph->data[pi - 1] == '\'' || ph->data[pi - 1] == ',');
+}
+
+// Replaces the 'E' at `pi` with '@' before an 'n' and with "I2"
+// otherwise. Returns the number of bytes the replacement added.
+
+static size_t reduce_e_at(struct chars * ph, size_t pi, bool before_n) {
+    size_t grew = 0;
+    if (before_n) {
+        ph->data[pi] = '@';
+    } else {
+        chars_grow(ph, ph->count + 2);
+        memmove(ph->data + pi + 2, ph->data + pi + 1,
+                ph->count - pi - 1);
+        ph->data[pi] = 'I';
+        ph->data[pi + 1] = '2';
+        ph->count += 1;
+        ph->data[ph->count] = '\0';
+        grew = 1;
+    }
+    return grew;
+}
+
+// Every bare 'E' strictly between two stress marks. `*end` is the
+// later mark and moves right with each insertion.
+
+static void reduce_e_between_stresses(struct chars * ph, size_t start,
+                                      size_t * end) {
+    for (size_t pi = start; pi < *end; pi++) {
+        if (ph->data[pi] == 'E') {
+            if (e_is_variant(ph, pi)) {
+                pi++;
+            } else if (!e_is_stressed(ph, pi)) {
+                bool before_n = pi + 1 < *end
+                    && ph->data[pi + 1] == 'n';
+                size_t grew = reduce_e_at(ph, pi, before_n);
+                *end += grew;
+                pi += grew;
+            }
+        }
+    }
+}
+
+// A '%'-initial word's first syllable is already unstressed, so every
+// bare 'E' after it becomes "I2" whether or not an 'n' follows.
+
+static void reduce_e_after_pct_lead(struct chars * ph,
+                                    size_t * primary_pos) {
+    size_t scan_start = 1;
+    while (scan_start < ph->count
+           && (ph->data[scan_start] == '\''
+            || ph->data[scan_start] == ','
+            || ph->data[scan_start] == '%'
+            || ph->data[scan_start] == '=')) {
+        scan_start++;
+    }
+    if (scan_start < ph->count) {
+        const char * code = NULL;
+        size_t code_len = 0;
+        find_phoneme_code(ph->data, ph->count, scan_start,
+                          &code, &code_len);
+        if (is_vowel_code(code, code_len)) { scan_start += code_len; }
+    }
+    for (size_t pi = scan_start; pi < *primary_pos; pi++) {
+        if (ph->data[pi] == 'E') {
+            if (e_is_variant(ph, pi)) {
+                pi++;
+            } else if (!e_is_stressed(ph, pi)) {
+                *primary_pos += reduce_e_at(ph, pi, false);
+                pi++;
+            }
+        }
+    }
+}
+
+static size_t first_stress_mark(const struct chars * ph) {
+    size_t first_stress = (size_t)-1;
+    for (size_t pi = 0;
+         pi < ph->count && first_stress == (size_t)-1; pi++) {
+        if (ph->data[pi] == '\'' || ph->data[pi] == ',') {
+            first_stress = pi;
+        }
+    }
+    return first_stress;
+}
+
+static int32_t count_vowels_after(const struct chars * ph, size_t pi,
+                                  const char ** last_code,
+                                  size_t * last_code_len) {
+    int32_t vowels_after = 0;
+    *last_code = NULL;
+    *last_code_len = 0;
+    size_t pj = pi + 1;
+    while (pj < ph->count) {
+        const char * code = NULL;
+        size_t code_len = 0;
+        find_phoneme_code(ph->data, ph->count, pj, &code, &code_len);
+        if (is_vowel_code(code, code_len)) {
+            vowels_after++;
+            *last_code = code;
+            *last_code_len = code_len;
+        }
+        pj += code_len;
+    }
+    return vowels_after;
+}
+
+// A single trailing syllable that is itself reduced does not justify
+// reducing this one.
+
+static bool e_should_reduce(const struct chars * ph, size_t pi) {
+    const char * last_code = NULL;
+    size_t last_code_len = 0;
+    int32_t vowels_after = count_vowels_after(ph, pi, &last_code,
+                                          &last_code_len);
+    return vowels_after >= 2
+        || (vowels_after == 1
+            && !is_unstressed_code(last_code, last_code_len));
+}
+
+static void reduce_e_after_first_stress(struct chars * ph) {
+    assert(ph->count == 0 || ph->data != NULL);
+    size_t first_stress = first_stress_mark(ph);
+    if (first_stress != (size_t)-1) {
+        size_t pi = first_stress + 1;
+        while (pi < ph->count) {
+            if (ph->data[pi] != 'E') {
+                pi++;
+            } else if (e_is_variant(ph, pi)) {
+                pi += 2;
+            } else {
+                size_t grew = 0;
+                if (!e_is_stressed(ph, pi) && e_should_reduce(ph, pi)) {
+                    bool before_n = pi + 1 < ph->count
+                        && ph->data[pi + 1] == 'n';
+                    grew = reduce_e_at(ph, pi, before_n);
+                }
+                pi += grew + 1;
+            }
+        }
+    }
 }
 
 static void reduce_e_unstressed(struct chars * ph,
                                 const bool * rba, size_t rba_n) {
     bool rule_derived = rba_n > 0;
     char * prim = memchr(ph->data, '\'', ph->count);
-    if (prim == NULL) { return; }
-    size_t primary_pos = (size_t)(prim - ph->data);
-    char * sec = memchr(ph->data, ',', ph->count);
-    size_t secondary_pos = sec != NULL
-        ? (size_t)(sec - ph->data) : (size_t)-1;
-    // Context 1: ',' before '\''.
-    if (rule_derived && secondary_pos != (size_t)-1
-        && secondary_pos < primary_pos) {
-        for (size_t pi = secondary_pos + 1;
-             pi < primary_pos; pi++) {
-            if (ph->data[pi] == 'E') {
-                bool is_variant = pi + 1 < ph->count
-                    && (ph->data[pi + 1] == '#'
-                     || ph->data[pi + 1] == '2');
-                if (is_variant) { pi++; }
-                else {
-                    bool stressed = pi > 0
-                        && (ph->data[pi - 1] == '\''
-                         || ph->data[pi - 1] == ',');
-                    if (!stressed) {
-                        bool before_n = pi + 1 < primary_pos
-                            && ph->data[pi + 1] == 'n';
-                        if (before_n) {
-                            ph->data[pi] = '@';
-                        } else {
-                            chars_grow(ph, ph->count + 2);
-                            memmove(ph->data + pi + 2,
-                                    ph->data + pi + 1,
-                                    ph->count - pi - 1);
-                            ph->data[pi] = 'I';
-                            ph->data[pi + 1] = '2';
-                            ph->count += 1;
-                            ph->data[ph->count] = '\0';
-                            primary_pos++;
-                            pi++;
-                        }
-                    }
-                }
-            }
+    if (prim != NULL) {
+        size_t primary_pos = (size_t)(prim - ph->data);
+        char * sec = memchr(ph->data, ',', ph->count);
+        size_t secondary_pos = sec != NULL
+            ? (size_t)(sec - ph->data) : (size_t)-1;
+        if (rule_derived && secondary_pos != (size_t)-1
+            && secondary_pos < primary_pos) {
+            reduce_e_between_stresses(ph, secondary_pos + 1,
+                                      &primary_pos);
         }
-    }
-    // Context 3: '\'' before ','.
-    if (rule_derived && secondary_pos != (size_t)-1
-        && secondary_pos > primary_pos) {
-        for (size_t pi = primary_pos + 1;
-             pi < secondary_pos; pi++) {
-            if (ph->data[pi] == 'E') {
-                bool is_variant = pi + 1 < ph->count
-                    && (ph->data[pi + 1] == '#'
-                     || ph->data[pi + 1] == '2');
-                if (is_variant) { pi++; }
-                else {
-                    bool stressed = pi > 0
-                        && (ph->data[pi - 1] == '\''
-                         || ph->data[pi - 1] == ',');
-                    if (!stressed) {
-                        bool before_n = pi + 1 < secondary_pos
-                            && ph->data[pi + 1] == 'n';
-                        if (before_n) {
-                            ph->data[pi] = '@';
-                        } else {
-                            chars_grow(ph, ph->count + 2);
-                            memmove(ph->data + pi + 2,
-                                    ph->data + pi + 1,
-                                    ph->count - pi - 1);
-                            ph->data[pi] = 'I';
-                            ph->data[pi + 1] = '2';
-                            ph->count += 1;
-                            ph->data[ph->count] = '\0';
-                            secondary_pos++;
-                            pi++;
-                        }
-                    }
-                }
-            }
+        if (rule_derived && secondary_pos != (size_t)-1
+            && secondary_pos > primary_pos) {
+            reduce_e_between_stresses(ph, primary_pos + 1,
+                                      &secondary_pos);
         }
-    }
-    // Context 2: '%' initial unstressed syllable.
-    if (ph->count > 0 && ph->data[0] == '%') {
-        size_t scan_start = 1;
-        while (scan_start < ph->count
-               && (ph->data[scan_start] == '\''
-                || ph->data[scan_start] == ','
-                || ph->data[scan_start] == '%'
-                || ph->data[scan_start] == '=')) {
-            scan_start++;
+        if (ph->count > 0 && ph->data[0] == '%') {
+            reduce_e_after_pct_lead(ph, &primary_pos);
         }
-        if (scan_start < ph->count) {
-            const char * code = NULL;
-            size_t code_len = 0;
-            find_phoneme_code(ph->data, ph->count, scan_start,
-                              &code, &code_len);
-            if (is_vowel_code(code, code_len)) {
-                scan_start += code_len;
-            }
-        }
-        for (size_t pi = scan_start; pi < primary_pos; pi++) {
-            if (ph->data[pi] == 'E') {
-                bool is_variant = pi + 1 < ph->count
-                    && (ph->data[pi + 1] == '#'
-                     || ph->data[pi + 1] == '2');
-                if (is_variant) { pi++; }
-                else {
-                    bool stressed = pi > 0
-                        && (ph->data[pi - 1] == '\''
-                         || ph->data[pi - 1] == ',');
-                    if (!stressed) {
-                        chars_grow(ph, ph->count + 2);
-                        memmove(ph->data + pi + 2,
-                                ph->data + pi + 1,
-                                ph->count - pi - 1);
-                        ph->data[pi] = 'I';
-                        ph->data[pi + 1] = '2';
-                        ph->count += 1;
-                        ph->data[ph->count] = '\0';
-                        primary_pos++;
-                        pi++;
-                    }
-                }
-            }
-        }
-    }
-    // Context 4: bare 'E' after first explicit stress, middle pos.
-    if (rule_derived) {
-        assert(ph->count == 0 || ph->data != NULL); // count>0 implies allocated data
-        size_t first_stress = (size_t)-1;
-        for (size_t pi = 0;
-             pi < ph->count && first_stress == (size_t)-1; pi++) {
-            if (ph->data[pi] == '\'' || ph->data[pi] == ',') {
-                first_stress = pi;
-            }
-        }
-        if (first_stress != (size_t)-1) {
-            size_t pi = first_stress + 1;
-            while (pi < ph->count) {
-                if (ph->data[pi] == 'E') {
-                    bool is_variant = pi + 1 < ph->count
-                        && (ph->data[pi + 1] == '#'
-                         || ph->data[pi + 1] == '2');
-                    if (is_variant) { pi += 2; }
-                    else {
-                        bool stressed = pi > 0
-                            && (ph->data[pi - 1] == '\''
-                             || ph->data[pi - 1] == ',');
-                        bool reduce_to_i2 = false;
-                        if (!stressed) {
-                            // Count vowels after this E.
-                            int vowels_after = 0;
-                            const char * last_code = NULL;
-                            size_t last_code_len = 0;
-                            size_t pj = pi + 1;
-                            while (pj < ph->count) {
-                                const char * code = NULL;
-                                size_t code_len = 0;
-                                find_phoneme_code(ph->data, ph->count,
-                                                  pj, &code, &code_len);
-                                if (is_vowel_code(code, code_len)) {
-                                    vowels_after++;
-                                    last_code = code;
-                                    last_code_len = code_len;
-                                }
-                                pj += code_len;
-                            }
-                            bool should_reduce = vowels_after >= 2
-                                || (vowels_after == 1
-                                    && !is_unstressed_code(
-                                        last_code, last_code_len));
-                            if (should_reduce) {
-                                bool before_n = pi + 1 < ph->count
-                                    && ph->data[pi + 1] == 'n';
-                                if (before_n) {
-                                    ph->data[pi] = '@';
-                                } else {
-                                    chars_grow(ph, ph->count + 2);
-                                    memmove(ph->data + pi + 2,
-                                            ph->data + pi + 1,
-                                            ph->count - pi - 1);
-                                    ph->data[pi] = 'I';
-                                    ph->data[pi + 1] = '2';
-                                    ph->count += 1;
-                                    ph->data[ph->count] = '\0';
-                                    reduce_to_i2 = true;
-                                }
-                            }
-                        }
-                        pi += reduce_to_i2 ? 2 : 1;
-                    }
-                } else {
-                    pi++;
-                }
-            }
+        if (rule_derived) {
+            reduce_e_after_first_stress(ph);
         }
     }
 }
@@ -4793,103 +5556,108 @@ static void reduce_e_unstressed(struct chars * ph,
 // primary '\'', and no second primary, move primary to the last
 // stressable vowel between them. Returns true if it fired (caller
 // uses this to suppress backward secondary in step 5a).
-static bool apply_equals_suffix_stress_shift(struct chars * ph) {
-    bool fired = false;
-    char * prim = memchr(ph->data, '\'', ph->count);
-    if (prim == NULL) { return false; }
-    size_t prim_pos = (size_t)(prim - ph->data);
-    size_t eq_pos = (size_t)-1;
-    for (size_t i = ph->count; i > 0; i--) {
-        if (ph->data[i - 1] == '=') { eq_pos = i - 1; break; }
+// Position of the last `c` in ph, or (size_t)-1.
+
+static size_t last_index_of(const struct chars * ph, char c) {
+    size_t i = ph->count;
+    size_t at = (size_t)-1;
+    while (i > 0 && at == (size_t)-1) {
+        if (ph->data[i - 1] == c) { at = i - 1; }
+        i--;
     }
-    if (eq_pos == (size_t)-1 || prim_pos >= eq_pos) { return false; }
-    bool has_second_primary = false;
-    for (size_t i = prim_pos + 1; i < eq_pos; i++) {
-        if (ph->data[i] == '\'') { has_second_primary = true; break; }
-    }
-    if (has_second_primary) { return false; }
+    return at;
+}
+
+static bool has_primary_between(const struct chars * ph, size_t from,
+                                size_t to) {
+    size_t i = from;
+    while (i < to && ph->data[i] != '\'') { i++; }
+    return i < to;
+}
+
+// The last unmarked strong vowel strictly between the primary and the
+// '=' marker, or (size_t)-1.
+
+static size_t last_shiftable_vowel(const struct chars * ph,
+                                   size_t prim_pos, size_t eq_pos) {
     size_t last_sv_pos = (size_t)-1;
     size_t scan = prim_pos + 1;
     while (scan < eq_pos) {
         char c = ph->data[scan];
-        if (c == '\'' || c == ',' || c == '%' || c == '=' || c == '*') {
+        if (c == '\'' || c == ',' || c == '%' || c == '='
+            || c == '*') {
             scan++;
         } else {
             const char * code = NULL;
             size_t code_len = 0;
             find_phoneme_code(ph->data, ph->count, scan,
                               &code, &code_len);
-            if (is_vowel_code(code, code_len)) {
-                bool is_weak =
-                    (code_len == 1 && code[0] == '@')
-                 || (code_len == 2 && code[0] == '@'
-                     && (code[1] == '2' || code[1] == '5'
-                      || code[1] == 'L'))
-                 || (code_len == 1 && code[0] == '3')
-                 || (code_len == 2 && code[0] == 'I'
-                     && (code[1] == '#' || code[1] == '2'))
-                 || (code_len == 2 && code[0] == 'a' && code[1] == '#')
-                 || (code_len == 1 && code[0] == 'i');
-                bool is_stressed = scan > 0
-                    && (ph->data[scan - 1] == '\''
-                     || ph->data[scan - 1] == ',');
-                if (!is_weak && !is_stressed) {
-                    last_sv_pos = scan;
-                }
+            bool is_stressed = scan > 0
+                && (ph->data[scan - 1] == '\''
+                 || ph->data[scan - 1] == ',');
+            if (is_vowel_code(code, code_len)
+                && !is_weak_vowel(code, code_len) && !is_stressed) {
+                last_sv_pos = scan;
             }
             scan += code_len;
         }
     }
-    if (last_sv_pos != (size_t)-1) {
-        size_t prim_vowel_pos = prim_pos + 1;
-        bool found_vowel = false;
-        while (prim_vowel_pos < ph->count && !found_vowel) {
-            const char * code = NULL;
-            size_t code_len = 0;
-            find_phoneme_code(ph->data, ph->count, prim_vowel_pos,
-                              &code, &code_len);
-            if (is_vowel_code(code, code_len)) {
-                found_vowel = true;
-            } else {
-                prim_vowel_pos += code_len;
-            }
+    return last_sv_pos;
+}
+
+static size_t first_vowel_from(const struct chars * ph, size_t from) {
+    size_t pos = from;
+    bool found_vowel = false;
+    while (pos < ph->count && !found_vowel) {
+        const char * code = NULL;
+        size_t code_len = 0;
+        find_phoneme_code(ph->data, ph->count, pos, &code, &code_len);
+        if (is_vowel_code(code, code_len)) {
+            found_vowel = true;
+        } else {
+            pos += code_len;
         }
-        if (prim_vowel_pos != last_sv_pos) {
-            ph->data[prim_pos] = ',';
-            if (last_sv_pos > 0
-                && ph->data[last_sv_pos - 1] == '*') {
-                ph->data[last_sv_pos - 1] = 't';
+    }
+    return pos;
+}
+
+static bool apply_equals_suffix_stress_shift(struct chars * ph) {
+    bool fired = false;
+    char * prim = memchr(ph->data, '\'', ph->count);
+    size_t prim_pos = prim != NULL ? (size_t)(prim - ph->data) : 0;
+    size_t eq_pos = prim != NULL ? last_index_of(ph, '=') : (size_t)-1;
+    bool shiftable = eq_pos != (size_t)-1 && prim_pos < eq_pos
+        && !has_primary_between(ph, prim_pos + 1, eq_pos);
+    if (shiftable) {
+        size_t last_sv_pos = last_shiftable_vowel(ph, prim_pos,
+                                                  eq_pos);
+        if (last_sv_pos != (size_t)-1) {
+            size_t prim_vowel_pos = first_vowel_from(ph, prim_pos + 1);
+            if (prim_vowel_pos != last_sv_pos) {
+                ph->data[prim_pos] = ',';
+                if (last_sv_pos > 0
+                    && ph->data[last_sv_pos - 1] == '*') {
+                    ph->data[last_sv_pos - 1] = 't';
+                }
+                insert_marker_at(ph, last_sv_pos, '\'');
+                fired = true;
             }
-            chars_grow(ph, ph->count + 2);
-            memmove(ph->data + last_sv_pos + 1,
-                    ph->data + last_sv_pos,
-                    ph->count - last_sv_pos);
-            ph->data[last_sv_pos] = '\'';
-            ph->count += 1;
-            ph->data[ph->count] = '\0';
-            fired = true;
         }
     }
     return fired;
 }
 
-// Step 5a-cleanup: remove ',' at syllable distance 1 from primary
-// (rule-derived only, when 5a did NOT run, and the ',' isn't
-// inside the same rule as the primary).
-static void cleanup_adjacent_secondary(struct chars * ph,
-                                       bool step5a_ran,
-                                       bool is_rule_leading_comma,
-                                       const bool * rba,
-                                       size_t rba_n) {
-    if (step5a_ran || is_rule_leading_comma || rba_n == 0
-        || memchr(ph->data, '\'', ph->count) == NULL
-        || memchr(ph->data, ',', ph->count) == NULL) {
-        return;
-    }
-    struct syle { size_t pos; bool is_primary; bool is_secondary; };
-    enum { MAX_SYL3 = 256 };
-    struct syle syls[MAX_SYL3];
-    int n = 0;
+enum { MAX_SYL3 = 256 };
+
+struct marked_syl {
+    size_t pos;
+    bool   is_primary;
+    bool   is_secondary;
+};
+
+static int32_t collect_marked_syllables(const struct chars * ph,
+                                        struct marked_syl * syls) {
+    int32_t n = 0;
     size_t pi = 0;
     bool prim = false;
     bool sec = false;
@@ -4913,66 +5681,97 @@ static void cleanup_adjacent_secondary(struct chars * ph,
             pi += code_len;
         }
     }
-    int prim_idx = -1;
-    for (int si = 0; si < n && prim_idx < 0; si++) {
+    return n;
+}
+
+static int32_t find_primary_marked(const struct marked_syl * syls, int32_t n) {
+    int32_t prim_idx = -1;
+    for (int32_t si = 0; si < n && prim_idx < 0; si++) {
         if (syls[si].is_primary) { prim_idx = si; }
     }
-    if (prim_idx < 0) { return; }
-    char * prim_marker = memchr(ph->data, '\'', ph->count);
-    size_t prim_ph_pos = (size_t)(prim_marker - ph->data);
-    // Collect commas to remove (descending order).
-    size_t to_remove[MAX_SYL3];
-    int n_remove = 0;
-    for (int si = 0; si < n; si++) {
-        if (syls[si].is_secondary
-            && (si == prim_idx + 1 || si == prim_idx - 1)) {
-            // Find comma_pos by scanning backward.
-            size_t syl_pos = syls[si].pos;
-            size_t comma_pos = (size_t)-1;
-            bool stop = false;
-            int bp = (int)syl_pos - 1;
-            while (bp >= 0 && !stop) {
-                if (ph->data[bp] == ',') {
-                    comma_pos = (size_t)bp;
-                    stop = true;
-                } else if (ph->data[bp] == '\''
-                    || ph->data[bp] == '%') {
-                    stop = true;
-                }
-                bp--;
+    return prim_idx;
+}
+
+// The ',' that marks the syllable at `syl_pos`, scanning back to the
+// previous '\'' or '%'. (size_t)-1 when it carries no comma.
+
+static size_t comma_before_syllable(const struct chars * ph,
+                                    size_t syl_pos) {
+    int32_t bp = (int32_t)syl_pos - 1;
+    while (bp >= 0 && ph->data[bp] != ',' && ph->data[bp] != '\''
+           && ph->data[bp] != '%') {
+        bp--;
+    }
+    bool hit = bp >= 0 && ph->data[bp] == ',';
+    return hit ? (size_t)bp : (size_t)-1;
+}
+
+// A rule boundary anywhere between the two marks means they came from
+// different rules.
+
+static bool same_rule_span(size_t a, size_t b, const bool * rba,
+                           size_t rba_n) {
+    size_t lo = a < b ? a : b;
+    size_t hi = a > b ? a : b;
+    bool same_rule = true;
+    for (size_t rp = lo; rp < hi && rp < rba_n && same_rule; rp++) {
+        if (rba[rp]) { same_rule = false; }
+    }
+    return same_rule;
+}
+
+// Descending, so each removal leaves the earlier positions valid.
+
+static void sort_positions_desc(size_t * a, int32_t n) {
+    for (int32_t i = 0; i < n; i++) {
+        for (int32_t j = i + 1; j < n; j++) {
+            if (a[j] > a[i]) {
+                size_t t = a[i];
+                a[i] = a[j];
+                a[j] = t;
             }
-            if (comma_pos != (size_t)-1) {
-                size_t lo = comma_pos < prim_ph_pos
-                    ? comma_pos : prim_ph_pos;
-                size_t hi = comma_pos > prim_ph_pos
-                    ? comma_pos : prim_ph_pos;
-                bool same_rule = true;
-                for (size_t rp = lo;
-                     rp < hi && rp < rba_n && same_rule; rp++) {
-                    if (rba[rp]) { same_rule = false; }
-                }
-                if (!same_rule) {
+        }
+    }
+}
+
+// Step 5a-cleanup: remove ',' at syllable distance 1 from primary
+// (rule-derived only, when 5a did NOT run, and the ',' isn't
+// inside the same rule as the primary).
+
+static void cleanup_adjacent_secondary(struct chars * ph,
+                                       bool step5a_ran,
+                                       bool is_rule_leading_comma,
+                                       const bool * rba,
+                                       size_t rba_n) {
+    bool active = !step5a_ran && !is_rule_leading_comma && rba_n > 0
+        && memchr(ph->data, '\'', ph->count) != NULL
+        && memchr(ph->data, ',', ph->count) != NULL;
+    if (active) {
+        struct marked_syl syls[MAX_SYL3];
+        int32_t n = collect_marked_syllables(ph, syls);
+        int32_t prim_idx = find_primary_marked(syls, n);
+        if (prim_idx >= 0) {
+            char * prim_marker = memchr(ph->data, '\'', ph->count);
+            size_t prim_ph_pos = (size_t)(prim_marker - ph->data);
+            size_t to_remove[MAX_SYL3];
+            int32_t n_remove = 0;
+            for (int32_t si = 0; si < n; si++) {
+                bool adjacent = syls[si].is_secondary
+                    && (si == prim_idx + 1 || si == prim_idx - 1);
+                size_t comma_pos = adjacent
+                    ? comma_before_syllable(ph, syls[si].pos)
+                    : (size_t)-1;
+                if (comma_pos != (size_t)-1
+                    && !same_rule_span(comma_pos, prim_ph_pos,
+                                       rba, rba_n)) {
                     to_remove[n_remove++] = comma_pos;
                 }
             }
-        }
-    }
-    // Sort descending.
-    for (int i = 0; i < n_remove; i++) {
-        for (int j = i + 1; j < n_remove; j++) {
-            if (to_remove[j] > to_remove[i]) {
-                size_t t = to_remove[i];
-                to_remove[i] = to_remove[j];
-                to_remove[j] = t;
+            sort_positions_desc(to_remove, n_remove);
+            for (int32_t i = 0; i < n_remove; i++) {
+                chars_erase_at(ph, to_remove[i]);
             }
         }
-    }
-    for (int i = 0; i < n_remove; i++) {
-        size_t pos = to_remove[i];
-        memmove(ph->data + pos, ph->data + pos + 1,
-                ph->count - pos - 1);
-        ph->count -= 1;
-        ph->data[ph->count] = '\0';
     }
 }
 
@@ -4980,154 +5779,53 @@ static void cleanup_adjacent_secondary(struct chars * ph,
 // AND both neighbours have stress level <= 1. When ph_in had no
 // primary, the first trochaic assignment becomes the PRIMARY and
 // the pick_last primary is removed.
+
 static void trochaic_compound_prefix(struct chars * ph,
                                      const char * ph_in, size_t in_n,
                                      bool step5a_ran,
                                      bool starts_with_secondary) {
-    if (step5a_ran || starts_with_secondary
-        || memchr(ph->data, '\'', ph->count) == NULL
-        || memchr(ph_in, ',', in_n) == NULL) {
-        return;
-    }
-    struct sylt {
-        size_t pos;
-        const char * code;
-        size_t code_len;
-        int level;
-    };
-    enum { MAX_SYL4 = 256 };
-    struct sylt syls[MAX_SYL4];
-    int n = 0;
-    size_t pi = 0;
-    int cur_level = -1;
-    while (pi < ph->count && n < MAX_SYL4) {
-        char c = ph->data[pi];
-        if (c == '\'') { cur_level = 4; pi++; }
-        else if (c == ',') { cur_level = 2; pi++; }
-        else if (c == '%' || c == '=') { cur_level = 1; pi++; }
-        else {
-            const char * code = NULL;
-            size_t code_len = 0;
-            find_phoneme_code(ph->data, ph->count, pi,
-                              &code, &code_len);
-            if (is_vowel_code(code, code_len)) {
-                syls[n].pos = pi;
-                syls[n].code = code;
-                syls[n].code_len = code_len;
-                syls[n].level = cur_level;
-                n++;
-                cur_level = -1;
-            } else {
-                cur_level = -1;
-            }
-            pi += code_len;
-        }
-    }
-    bool input_has_primary = memchr(ph_in, '\'', in_n) != NULL
-        || memchr(ph_in, '=', in_n) != NULL;
-    bool trochaic_primary_done = false;
-    bool stop_outer = false;
-    for (int sv = 0; sv < n && !stop_outer; sv++) {
-        if (syls[sv].level == -1) {
-            const char * vcode = syls[sv].code;
-            size_t vcl = syls[sv].code_len;
-            bool is_unstressed_phone =
-                (vcl == 1 && (vcode[0] == '@' || vcode[0] == '3'
-                           || vcode[0] == 'i'))
-             || (vcl == 2 && vcode[0] == '@'
-                 && (vcode[1] == '2' || vcode[1] == '5'
-                  || vcode[1] == 'L'))
-             || (vcl == 2 && vcode[0] == 'I'
-                 && (vcode[1] == '#' || vcode[1] == '2'))
-             || (vcl == 2 && vcode[0] == 'a' && vcode[1] == '#');
-            if (!is_unstressed_phone) {
-                // effectiveLv: scan in direction, skipping schwas.
-                int prev_lv = -1, next_lv = -1;
-                for (int nv = sv - 1; nv >= 0; nv--) {
-                    const char * c2 = syls[nv].code;
-                    size_t cl = syls[nv].code_len;
-                    bool is_schwa = (cl == 1 && (c2[0] == '@' || c2[0] == '3'))
-                        || (cl == 2 && c2[0] == '@'
-                            && (c2[1] == '2' || c2[1] == '5'
-                             || c2[1] == 'L'));
-                    if (!is_schwa) { prev_lv = syls[nv].level; break; }
-                }
-                for (int nv = sv + 1; nv < n; nv++) {
-                    const char * c2 = syls[nv].code;
-                    size_t cl = syls[nv].code_len;
-                    bool is_schwa = (cl == 1 && (c2[0] == '@' || c2[0] == '3'))
-                        || (cl == 2 && c2[0] == '@'
-                            && (c2[1] == '2' || c2[1] == '5'
-                             || c2[1] == 'L'));
-                    if (!is_schwa) { next_lv = syls[nv].level; break; }
-                }
-                if (prev_lv <= 1 && next_lv <= 1) {
-                    if (!input_has_primary && !trochaic_primary_done) {
-                        // Move pick_last primary to this position.
-                        char * pm = memchr(ph->data, '\'',
-                                           ph->count);
-                        if (pm != NULL) {
-                            size_t pp = (size_t)(pm - ph->data);
-                            memmove(ph->data + pp,
-                                    ph->data + pp + 1,
-                                    ph->count - pp - 1);
-                            ph->count -= 1;
-                            ph->data[ph->count] = '\0';
-                            for (int k = 0; k < n; k++) {
-                                if (syls[k].pos > pp) {
-                                    syls[k].pos--;
-                                }
-                                if (syls[k].level == 4) {
-                                    syls[k].level = -1;
-                                }
-                            }
-                        }
-                        chars_grow(ph, ph->count + 2);
-                        memmove(ph->data + syls[sv].pos + 1,
-                                ph->data + syls[sv].pos,
-                                ph->count - syls[sv].pos);
-                        ph->data[syls[sv].pos] = '\'';
-                        ph->count += 1;
-                        ph->data[ph->count] = '\0';
-                        for (int nv = sv + 1; nv < n; nv++) {
-                            syls[nv].pos++;
-                        }
-                        syls[sv].level = 4;
-                        trochaic_primary_done = true;
-                    } else {
-                        chars_grow(ph, ph->count + 2);
-                        memmove(ph->data + syls[sv].pos + 1,
-                                ph->data + syls[sv].pos,
-                                ph->count - syls[sv].pos);
-                        ph->data[syls[sv].pos] = ',';
-                        ph->count += 1;
-                        ph->data[ph->count] = '\0';
-                        for (int nv = sv + 1; nv < n; nv++) {
-                            syls[nv].pos++;
-                        }
-                        stop_outer = true;
-                    }
+    bool active = !step5a_ran && !starts_with_secondary
+        && memchr(ph->data, '\'', ph->count) != NULL
+        && memchr(ph_in, ',', in_n) != NULL;
+    if (active) {
+        struct troch_syl syls[MAX_SYL4];
+        int32_t n = collect_trochaic_syllables(ph, syls);
+        bool input_has_primary = memchr(ph_in, '\'', in_n) != NULL
+            || memchr(ph_in, '=', in_n) != NULL;
+        bool trochaic_primary_done = false;
+        bool stop_outer = false;
+        for (int32_t sv = 0; sv < n && !stop_outer; sv++) {
+            bool candidate = syls[sv].level == -1
+                && !is_weak_vowel(syls[sv].code, syls[sv].code_len)
+                && effective_level(syls, n, sv, -1) <= 1
+                && effective_level(syls, n, sv, 1) <= 1;
+            if (candidate) {
+                if (!input_has_primary && !trochaic_primary_done) {
+                    promote_trochaic_primary(ph, syls, n, sv);
+                    trochaic_primary_done = true;
+                } else {
+                    insert_trochaic_secondary(ph, syls, n, sv);
+                    stop_outer = true;
                 }
             }
         }
     }
 }
 
-// Step 5a-final: add secondary stress to last stressable vowel
-// when its direct predecessor is a schwa/phUNSTRESSED phoneme.
-static void final_syllable_secondary(struct chars * ph) {
-    if (memchr(ph->data, '\'', ph->count) == NULL) { return; }
-    struct sylf {
-        size_t pos;
-        const char * code;
-        size_t code_len;
-        int level;
-    };
-    enum { MAX_SYL5 = 256 };
-    struct sylf syls[MAX_SYL5];
-    int n = 0;
+enum { MAX_SYL5 = 256 };
+
+struct final_syl {
+    size_t       pos;
+    const char * code;
+    size_t       code_len;
+    int32_t      level;
+};
+
+static int32_t collect_final_syllables(const struct chars * ph,
+                                       struct final_syl * syls) {
+    int32_t n = 0;
     size_t pi = 0;
-    int cur_level = -1;
+    int32_t cur_level = -1;
     while (pi < ph->count && n < MAX_SYL5) {
         char c = ph->data[pi];
         if (c == '\'') { cur_level = 4; pi++; }
@@ -5139,19 +5837,15 @@ static void final_syllable_secondary(struct chars * ph) {
             find_phoneme_code(ph->data, ph->count, pi,
                               &code, &code_len);
             if (is_vowel_code(code, code_len)) {
-                if (code_len == 1 && code[0] == '@'
-                    && pi + 1 < ph->count
-                    && ph->data[pi + 1] == '-') {
-                    pi += code_len;
-                } else {
+                if (!is_hyphenated_schwa(ph, pi, code, code_len)) {
                     syls[n].pos = pi;
                     syls[n].code = code;
                     syls[n].code_len = code_len;
                     syls[n].level = cur_level;
                     n++;
                     cur_level = -1;
-                    pi += code_len;
                 }
+                pi += code_len;
             } else if (ph->data[pi] == '-') {
                 pi++;
             } else {
@@ -5159,42 +5853,27 @@ static void final_syllable_secondary(struct chars * ph) {
             }
         }
     }
-    if (n < 2) { return; }
-    struct sylf * last = &syls[n - 1];
-    struct sylf * prev = &syls[n - 2];
-    // Is the last code itself unstressed/phNONSYLLABIC?
-    bool last_unstressed =
-        (last->code_len == 1 && (last->code[0] == '@'
-                               || last->code[0] == '3'
-                               || last->code[0] == 'i'))
-     || (last->code_len == 2 && last->code[0] == '@'
-         && (last->code[1] == '2' || last->code[1] == '5'
-          || last->code[1] == 'L'))
-     || (last->code_len == 2 && last->code[0] == 'I'
-         && (last->code[1] == '#' || last->code[1] == '2'))
-     || (last->code_len == 2 && last->code[0] == 'a'
-         && last->code[1] == '#');
-    bool last_is_stressable = !last_unstressed;
-    if (last->level == -1 && last_is_stressable) {
-        bool prev_unstressed =
-            (prev->code_len == 1 && (prev->code[0] == '@'
-                                  || prev->code[0] == '3'))
-         || (prev->code_len == 2 && prev->code[0] == '@'
-             && (prev->code[1] == '2' || prev->code[1] == '5'
-              || prev->code[1] == 'L'))
-         || (prev->code_len == 2 && prev->code[0] == 'I'
-             && (prev->code[1] == '#' || prev->code[1] == '2'))
-         || (prev->code_len == 2 && prev->code[0] == 'a'
-             && prev->code[1] == '#')
-         || prev->level == 1;
-        if (prev_unstressed) {
-            chars_grow(ph, ph->count + 2);
-            memmove(ph->data + last->pos + 1,
-                    ph->data + last->pos,
-                    ph->count - last->pos);
-            ph->data[last->pos] = ',';
-            ph->count += 1;
-            ph->data[ph->count] = '\0';
+    return n;
+}
+
+// Step 5a-final: add secondary stress to last stressable vowel
+// when its direct predecessor is a schwa/phUNSTRESSED phoneme.
+
+static void final_syllable_secondary(struct chars * ph) {
+    if (memchr(ph->data, '\'', ph->count) != NULL) {
+        struct final_syl syls[MAX_SYL5];
+        int32_t n = collect_final_syllables(ph, syls);
+        if (n >= 2) {
+            const struct final_syl * last = &syls[n - 1];
+            const struct final_syl * prev = &syls[n - 2];
+            bool prev_unstressed =
+                is_reduced_or_schwa(prev->code, prev->code_len)
+                || prev->level == 1;
+            if (last->level == -1
+                && !is_weak_vowel(last->code, last->code_len)
+                && prev_unstressed) {
+                insert_marker_at(ph, last->pos, ',');
+            }
         }
     }
 }
@@ -5207,6 +5886,18 @@ static void final_syllable_secondary(struct chars * ph) {
 // Helper for insert_primary_stress: returns true iff a stressable
 // (non-schwa) vowel exists after `pi`, with no primary stress
 // marker in between.
+// Schwa, the schwa family and bare 3 are too weak to be the strong
+// vowel this scan looks for.
+
+static bool is_weak_nucleus_code(const char * code,
+                                 size_t code_len) {
+    return (code_len == 1 && code[0] == '@')
+        || (code_len == 2 && code[0] == '@'
+            && (code[1] == '2' || code[1] == '5'
+             || code[1] == 'L'))
+        || (code_len == 1 && code[0] == '3');
+}
+
 static bool has_strong_after(const char * ph, size_t pn, size_t pi) {
     bool unst = false;
     bool found = false;
@@ -5220,13 +5911,9 @@ static bool has_strong_after(const char * ph, size_t pn, size_t pi) {
             size_t code_len = 0;
             find_phoneme_code(ph, pn, pi, &code, &code_len);
             if (is_vowel_code(code, code_len)) {
-                bool is_weak =
-                    (code_len == 1 && code[0] == '@')
-                 || (code_len == 2 && code[0] == '@'
-                     && (code[1] == '2' || code[1] == '5'
-                      || code[1] == 'L'))
-                 || (code_len == 1 && code[0] == '3');
-                if (!unst && !is_weak) { found = true; }
+                if (!unst && !is_weak_nucleus_code(code, code_len)) {
+                    found = true;
+                }
                 unst = false;
             }
             pi += code_len;
@@ -5235,21 +5922,17 @@ static bool has_strong_after(const char * ph, size_t pn, size_t pi) {
     return found;
 }
 
-// Step 5: insert primary stress.
-static void insert_primary_stress(struct chars * ph,
-                                  bool force_final_stress,
-                                  const bool * rba, size_t rba_n) {
-    bool starts_with_secondary = ph->count > 0
-        && ph->data[0] == ',';
-    bool is_rule_leading_comma = starts_with_secondary && rba_n > 0;
-    bool active = memchr(ph->data, '\'', ph->count) == NULL
-        && (!starts_with_secondary || is_rule_leading_comma);
-    if (!active) { return; }
-    // Determine pick_last.
+// A compound tail with no strong vowel after the last "=" pushes the
+// primary onto the last syllable.
+
+static bool compute_pick_last(const struct chars * ph,
+                              bool force_final_stress) {
     bool pick_last = force_final_stress;
     size_t last_eq = (size_t)-1;
-    for (size_t i = ph->count; i > 0; i--) {
-        if (ph->data[i - 1] == '=') { last_eq = i - 1; break; }
+    size_t i = ph->count;
+    while (i > 0 && last_eq == (size_t)-1) {
+        if (ph->data[i - 1] == '=') { last_eq = i - 1; }
+        i--;
     }
     if (last_eq != (size_t)-1) {
         bool has_strong = false;
@@ -5259,176 +5942,268 @@ static void insert_primary_stress(struct chars * ph,
             size_t code_len = 0;
             find_phoneme_code(ph->data, ph->count, pi2,
                               &code, &code_len);
-            if (is_vowel_code(code, code_len)) {
-                bool is_weak =
-                    (code_len == 2 && code[0] == '@'
-                     && (code[1] == '2' || code[1] == '5'
-                      || code[1] == 'L'))
-                 || (code_len == 2 && code[0] == 'I'
-                     && (code[1] == '#' || code[1] == '2'))
-                 || (code_len == 1 && code[0] == '@')
-                 || (code_len == 1 && code[0] == '3')
-                 || (code_len == 2 && code[0] == 'a' && code[1] == '#')
-                 || (code_len == 2 && code[0] == 'i' && code[1] == '@')
-                 || (code_len == 1 && code[0] == 'i');
-                if (!is_weak) { has_strong = true; }
+            if (is_vowel_code(code, code_len)
+                && !is_weak_tail_vowel(code, code_len)) {
+                has_strong = true;
             }
             pi2 += code_len;
         }
         pick_last = !has_strong;
     }
-    bool ignore_comma_for_primary = rba_n > 0;
-    // Strong-diphthong-after-leading-secondary exception.
-    bool use_pick_last_for_secondary = false;
-    if (ignore_comma_for_primary) {
-        size_t comma_pi = (size_t)-1;
-        bool stop_search = false;
-        for (size_t spi = 0; spi < ph->count && !stop_search; spi++) {
-            if (ph->data[spi] == '\'') { stop_search = true; }
-            else if (ph->data[spi] == ',') {
-                if (spi > 0) { comma_pi = spi; }
-                stop_search = true;
-            }
-        }
-        if (comma_pi != (size_t)-1) {
-            size_t scan = comma_pi + 1;
-            while (scan < ph->count
-                   && (ph->data[scan] == '\''
-                    || ph->data[scan] == ','
-                    || ph->data[scan] == '%'
-                    || ph->data[scan] == '=')) {
-                scan++;
-            }
-            if (scan < ph->count) {
-                const char * code = NULL;
-                size_t code_len = 0;
-                find_phoneme_code(ph->data, ph->count, scan,
-                                  &code, &code_len);
-                if (is_vowel_code(code, code_len)) {
-                    scan += code_len;
+    return pick_last;
+}
+
+// Position of the first ',' before any '\'', when it is not at index 0.
+// (size_t)-1 when there is none.
+
+static size_t leading_secondary_comma(const struct chars * ph) {
+    size_t spi = 0;
+    while (spi < ph->count && ph->data[spi] != '\''
+           && ph->data[spi] != ',') {
+        spi++;
+    }
+    bool hit = spi < ph->count && ph->data[spi] == ',' && spi > 0;
+    return hit ? spi : (size_t)-1;
+}
+
+// First position past the leading secondary's own vowel.
+
+static size_t pos_after_secondary_vowel(const struct chars * ph,
+                                        size_t comma_pi) {
+    size_t scan = comma_pi + 1;
+    while (scan < ph->count
+           && (ph->data[scan] == '\'' || ph->data[scan] == ','
+            || ph->data[scan] == '%' || ph->data[scan] == '=')) {
+        scan++;
+    }
+    if (scan < ph->count) {
+        const char * code = NULL;
+        size_t code_len = 0;
+        find_phoneme_code(ph->data, ph->count, scan, &code, &code_len);
+        if (is_vowel_code(code, code_len)) { scan += code_len; }
+    }
+    return scan;
+}
+
+// After a leading secondary, a strong diphthong further along moves the
+// primary to the last syllable instead of the first.
+
+static bool strong_diphthong_after_secondary(const struct chars * ph) {
+    static const char * const strong_diph[] = {
+        "oU","aI","eI","aU","OI","aI@","aI3","aU@","i:",
+        "u:","A:","E:","3:","o:","U:", NULL
+    };
+    bool found = false;
+    size_t comma_pi = leading_secondary_comma(ph);
+    if (comma_pi != (size_t)-1) {
+        size_t scan = pos_after_secondary_vowel(ph, comma_pi);
+        while (scan < ph->count && !found && ph->data[scan] != '\'') {
+            const char * code = NULL;
+            size_t code_len = 0;
+            find_phoneme_code(ph->data, ph->count, scan,
+                              &code, &code_len);
+            for (int32_t si = 0; strong_diph[si] != NULL && !found; si++) {
+                size_t sdl = strlen(strong_diph[si]);
+                if (code_len == sdl
+                    && memcmp(code, strong_diph[si], sdl) == 0) {
+                    found = true;
                 }
             }
-            static const char * const strong_diph[] = {
-                "oU","aI","eI","aU","OI","aI@","aI3","aU@","i:",
-                "u:","A:","E:","3:","o:","U:", NULL
-            };
-            bool stop_strong = false;
-            while (scan < ph->count && !stop_strong) {
-                if (ph->data[scan] == '\'') { stop_strong = true; }
-                else {
-                    const char * code = NULL;
-                    size_t code_len = 0;
-                    find_phoneme_code(ph->data, ph->count, scan,
-                                      &code, &code_len);
-                    for (int si = 0;
-                         strong_diph[si] != NULL
-                         && !use_pick_last_for_secondary; si++) {
-                        size_t sdl = strlen(strong_diph[si]);
-                        if (code_len == sdl
-                            && memcmp(code, strong_diph[si], sdl) == 0) {
-                            use_pick_last_for_secondary = true;
-                        }
-                    }
-                    if (use_pick_last_for_secondary) {
-                        stop_strong = true;
-                    } else {
-                        scan += code_len;
-                    }
-                }
-            }
+            if (!found) { scan += code_len; }
         }
     }
-    if (use_pick_last_for_secondary) {
-        pick_last = true;
-        ignore_comma_for_primary = false;
+    return found;
+}
+
+// Running state of the primary-stress scan. `done` ends the walk, at a
+// pre-existing '\'' or at the position the primary will take.
+struct primary_scan {
+    size_t pos;
+    size_t insert_pos;
+    size_t last_strong_pos;
+    size_t last_schwa_pos;
+    size_t secondary_vowel_pos;
+    bool   unstressed;
+    bool   secondary_next;
+    bool   done;
+};
+
+static void primary_scan_vowel(struct primary_scan * s,
+                               const struct chars * ph,
+                               const char * code, size_t code_len,
+                               bool pick_last, bool sec_pick_last) {
+    if (s->secondary_next) {
+        s->secondary_next = false;
+        s->unstressed = false;
+        if (s->secondary_vowel_pos == (size_t)-1) {
+            s->secondary_vowel_pos = s->pos;
+        }
+        s->pos += code_len;
+    } else if (s->unstressed) {
+        s->unstressed = false;
+        s->pos += code_len;
+    } else if (is_reduced_vowel(code, code_len)) {
+        s->pos += code_len;
+    } else if (is_schwa_vowel(code, code_len)) {
+        if (!has_strong_after(ph->data, ph->count, s->pos + code_len)) {
+            s->last_schwa_pos = s->pos;
+            if (!pick_last && s->insert_pos == (size_t)-1) {
+                s->insert_pos = s->pos;
+            }
+        }
+        s->pos += code_len;
+    } else if (pick_last) {
+        if (sec_pick_last && code_len == 1 && code[0] == 'I') {
+            s->last_schwa_pos = s->pos;
+        } else {
+            s->last_strong_pos = s->pos;
+        }
+        s->pos += code_len;
+    } else {
+        s->insert_pos = s->pos;
+        s->done = true;
     }
-    // Main scan.
-    bool unstressed = false;
-    bool secondary_next = false;
-    size_t last_strong_pos = (size_t)-1;
-    size_t last_schwa_pos = (size_t)-1;
-    size_t secondary_vowel_pos = (size_t)-1;
-    size_t insert_pos = (size_t)-1;
-    size_t pi = 0;
-    bool stop_main = false;
-    while (pi < ph->count && !stop_main) {
-        char c = ph->data[pi];
-        if (c == '\'') { stop_main = true; }
+}
+
+static struct primary_scan scan_for_primary(const struct chars * ph,
+                                            bool pick_last,
+                                            bool ignore_comma,
+                                            bool sec_pick_last) {
+    struct primary_scan s = {0};
+    s.insert_pos          = (size_t)-1;
+    s.last_strong_pos     = (size_t)-1;
+    s.last_schwa_pos      = (size_t)-1;
+    s.secondary_vowel_pos = (size_t)-1;
+    while (s.pos < ph->count && !s.done) {
+        char c = ph->data[s.pos];
+        if (c == '\'') { s.done = true; }
         else if (c == ',') {
-            if (!ignore_comma_for_primary || pi == 0) {
-                secondary_next = true;
-            }
-            pi++;
+            if (!ignore_comma || s.pos == 0) { s.secondary_next = true; }
+            s.pos++;
         } else if (c == '%' || c == '=') {
-            unstressed = true; pi++;
+            s.unstressed = true;
+            s.pos++;
         } else {
             const char * code = NULL;
             size_t code_len = 0;
-            find_phoneme_code(ph->data, ph->count, pi,
+            find_phoneme_code(ph->data, ph->count, s.pos,
                               &code, &code_len);
             if (is_vowel_code(code, code_len)) {
-                if (secondary_next) {
-                    secondary_next = false;
-                    unstressed = false;
-                    if (secondary_vowel_pos == (size_t)-1) {
-                        secondary_vowel_pos = pi;
-                    }
-                    pi += code_len;
-                } else if (unstressed) {
-                    unstressed = false;
-                    pi += code_len;
-                } else if ((code_len == 2 && code[0] == '@'
-                            && (code[1] == '2' || code[1] == '5'
-                             || code[1] == 'L'))
-                        || (code_len == 2 && code[0] == 'I'
-                            && (code[1] == '#' || code[1] == '2'))
-                        || (code_len == 2 && code[0] == 'a'
-                            && code[1] == '#')
-                        || (code_len == 1 && code[0] == 'i')) {
-                    pi += code_len;
-                } else if ((code_len == 1 && code[0] == '@')
-                        || (code_len == 1 && code[0] == '3')) {
-                    if (!has_strong_after(ph->data, ph->count,
-                                          pi + code_len)) {
-                        last_schwa_pos = pi;
-                        if (!pick_last && insert_pos == (size_t)-1) {
-                            insert_pos = pi;
-                        }
-                    }
-                    pi += code_len;
-                } else {
-                    if (pick_last) {
-                        if (use_pick_last_for_secondary
-                            && code_len == 1 && code[0] == 'I') {
-                            last_schwa_pos = pi;
-                        } else {
-                            last_strong_pos = pi;
-                        }
-                        pi += code_len;
-                    } else {
-                        insert_pos = pi;
-                        stop_main = true;
-                    }
-                }
+                primary_scan_vowel(&s, ph, code, code_len,
+                                   pick_last, sec_pick_last);
             } else {
-                pi += code_len;
+                s.pos += code_len;
             }
         }
     }
     if (pick_last) {
-        insert_pos = last_strong_pos != (size_t)-1
-            ? last_strong_pos : last_schwa_pos;
+        s.insert_pos = s.last_strong_pos != (size_t)-1
+            ? s.last_strong_pos : s.last_schwa_pos;
     }
+    return s;
+}
+
+// A primary landing on a schwa is dropped when the string leads with
+// '%' or already carries a secondary-marked vowel.
+
+static bool suppress_primary_on_schwa(const struct chars * ph,
+                                      size_t insert_pos,
+                                      size_t secondary_vowel_pos) {
+    bool at_schwa_or_r = insert_pos != (size_t)-1
+        && insert_pos < ph->count
+        && (ph->data[insert_pos] == '@'
+         || (ph->data[insert_pos] == '3'
+             && (insert_pos + 1 >= ph->count
+              || ph->data[insert_pos + 1] != ':')));
+    bool pct_lead = ph->count > 0 && ph->data[0] == '%';
+    bool has_secondary = secondary_vowel_pos != (size_t)-1;
+    return at_schwa_or_r && (pct_lead || has_secondary);
+}
+
+// 3 and 8 are phoneme codes in their own right, never variant digits.
+
+static bool is_variant_digit(char c) {
+    return c >= '1' && c <= '9' && c != '3' && c != '8';
+}
+
+static void strip_a_hash_variant_digits(struct chars * ph, size_t at) {
+    bool has_variant_digit = at + 3 < ph->count
+        && is_variant_digit(ph->data[at + 3]);
+    if (has_variant_digit) {
+        chars_erase_at(ph, at + 2);
+        while (at + 2 < ph->count && is_variant_digit(ph->data[at + 2])) {
+            chars_erase_at(ph, at + 2);
+        }
+    }
+}
+
+// Last resort when no vowel took the primary: stress "a#" as "a".
+
+static void stress_a_hash_last_resort(struct chars * ph) {
+    size_t pi2 = 0;
+    bool done = false;
+    while (pi2 < ph->count && !done) {
+        const char * code = NULL;
+        size_t code_len = 0;
+        find_phoneme_code(ph->data, ph->count, pi2, &code, &code_len);
+        if (code_len == 2 && code[0] == 'a' && code[1] == '#') {
+            insert_marker_at(ph, pi2, '\'');
+            strip_a_hash_variant_digits(ph, pi2);
+            done = true;
+        } else if (is_vowel_code(code, code_len)) {
+            done = true;
+        } else {
+            pi2 += code_len;
+        }
+    }
+}
+
+// Step 5: insert primary stress.
+
+static void insert_primary_stress(struct chars * ph,
+                                  bool force_final_stress,
+                                  const bool * rba, size_t rba_n) {
+    (void)rba;
+    bool starts_with_secondary = ph->count > 0
+        && ph->data[0] == ',';
+    bool is_rule_leading_comma = starts_with_secondary && rba_n > 0;
+    bool active = memchr(ph->data, '\'', ph->count) == NULL
+        && (!starts_with_secondary || is_rule_leading_comma);
+    if (active) {
+        bool pick_last = compute_pick_last(ph, force_final_stress);
+        bool ignore_comma = rba_n > 0;
+        bool sec_pick_last = ignore_comma
+            && strong_diphthong_after_secondary(ph);
+        if (sec_pick_last) {
+            pick_last = true;
+            ignore_comma = false;
+        }
+        struct primary_scan s = scan_for_primary(ph, pick_last,
+                                                 ignore_comma,
+                                                 sec_pick_last);
+        if (s.insert_pos != (size_t)-1
+            && !suppress_primary_on_schwa(ph, s.insert_pos,
+                                          s.secondary_vowel_pos)) {
+            insert_marker_at(ph, s.insert_pos, '\'');
+        } else {
+            stress_a_hash_last_resort(ph);
+        }
+    }
+}
+
+// Centering/initial-diphthong skip: if primary landed on a centering
+// or initial diphthong, look forward for a better candidate. Dead code
+// matching the .cpp's disabled branch -- both is_diphthong and
+// is_centering are hardcoded false and there is no path to flip them.
+// Kept so the logic can be recovered if a future dialect or lemma
+// override needs it. The .cpp original lived around phonemizer.cpp:
+// 4913-4983.
+
 #if 0
-    // Centering/initial-diphthong skip: if primary landed on a
-    // centering or initial diphthong, look forward for a better
-    // candidate. Ported as dead code (matches the .cpp's disabled
-    // branch — both is_diphthong and is_centering are hardcoded
-    // false; there's no path to flip them). Preserved here so the
-    // logic can be recovered if a future dialect / lemma override
-    // needs it. The .cpp original lived around phonemizer.cpp:
-    // 4913-4983.
-    else if (insert_pos != (size_t)-1) {
+static void skip_to_better_primary(const struct chars * ph,
+                                   size_t * insert_pos_io) {
+    size_t insert_pos = *insert_pos_io;
+    if (insert_pos != (size_t)-1) {
         const char * found_code = NULL;
         size_t found_len = 0;
         find_phoneme_code(ph->data, ph->count, insert_pos,
@@ -5476,7 +6251,7 @@ static void insert_primary_stress(struct chars * ph,
                                       &code2, &code2_len);
                     if (is_vowel_code(code2, code2_len)) {
                         bool is_skip = false;
-                        for (int di = 0;
+                        for (int32_t di = 0;
                              skip_list[di] != NULL && !is_skip;
                              di++) {
                             size_t sl = strlen(skip_list[di]);
@@ -5511,103 +6286,59 @@ static void insert_primary_stress(struct chars * ph,
             if (better_found) { insert_pos = better_pos; }
         }
     }
+    *insert_pos_io = insert_pos;
+}
 #endif
-    // Suppress primary on schwa when ph starts with '%' OR there's
-    // a secondary-marked vowel.
-    bool at_schwa_or_r = insert_pos != (size_t)-1
-        && insert_pos < ph->count
-        && (ph->data[insert_pos] == '@'
-         || (ph->data[insert_pos] == '3'
-             && (insert_pos + 1 >= ph->count
-              || ph->data[insert_pos + 1] != ':')));
-    bool pct_lead = ph->count > 0 && ph->data[0] == '%';
-    bool has_secondary = secondary_vowel_pos != (size_t)-1;
-    bool suppress_schwa = at_schwa_or_r
-        && (pct_lead || has_secondary);
-    if (insert_pos != (size_t)-1 && !suppress_schwa) {
-        chars_grow(ph, ph->count + 2);
-        memmove(ph->data + insert_pos + 1,
-                ph->data + insert_pos,
-                ph->count - insert_pos);
-        ph->data[insert_pos] = '\'';
-        ph->count += 1;
-        ph->data[ph->count] = '\0';
-    } else {
-        // Last resort: stress 'a#' as 'a'.
-        size_t pi2 = 0;
-        bool done = false;
-        while (pi2 < ph->count && !done) {
-            const char * code = NULL;
-            size_t code_len = 0;
-            find_phoneme_code(ph->data, ph->count, pi2,
-                              &code, &code_len);
-            if (code_len == 2 && code[0] == 'a' && code[1] == '#') {
-                chars_grow(ph, ph->count + 2);
-                memmove(ph->data + pi2 + 1,
-                        ph->data + pi2,
-                        ph->count - pi2);
-                ph->data[pi2] = '\'';
-                ph->count += 1;
-                ph->data[ph->count] = '\0';
-                bool has_variant_digit = pi2 + 3 < ph->count
-                    && ph->data[pi2 + 3] >= '1'
-                    && ph->data[pi2 + 3] <= '9'
-                    && ph->data[pi2 + 3] != '3'
-                    && ph->data[pi2 + 3] != '8';
-                if (has_variant_digit) {
-                    // Remove '#' at pi2+2.
-                    memmove(ph->data + pi2 + 2,
-                            ph->data + pi2 + 3,
-                            ph->count - pi2 - 3);
-                    ph->count -= 1;
-                    ph->data[ph->count] = '\0';
-                    // Strip trailing variant digits.
-                    while (pi2 + 2 < ph->count) {
-                        char dc = ph->data[pi2 + 2];
-                        if (dc >= '1' && dc <= '9' && dc != '3'
-                            && dc != '8') {
-                            memmove(ph->data + pi2 + 2,
-                                    ph->data + pi2 + 3,
-                                    ph->count - pi2 - 3);
-                            ph->count -= 1;
-                            ph->data[ph->count] = '\0';
-                        } else {
-                            break;
-                        }
-                    }
-                }
-                done = true;
-            } else if (is_vowel_code(code, code_len)) {
-                done = true;
-            } else {
-                pi2 += code_len;
+
+
+// One vowel of the phoneme string, with the stress markers that
+// preceded it already folded in.
+enum { MAX_SYL6 = 256 };
+
+struct sec_syl {
+    size_t       pos;
+    const char * code;
+    size_t       code_len;
+    bool         stressable;
+    bool         is_primary;
+    bool         already_secondary;
+};
+
+// A rule boundary inside a centering diphthong splits it, leaving the
+// trailing '@'/'3' to stand as its own syllable. `pi_orig` walks back
+// to the pre-marker offset the rule-boundary array is indexed by.
+
+static size_t split_centering_diphthong(const struct chars * ph,
+                                        size_t pi, const char * code,
+                                        size_t code_len,
+                                        const bool * rba,
+                                        size_t rba_n) {
+    size_t r = code_len;
+    char last = code[code_len - 1];
+    if (last == '@' || last == '3') {
+        size_t pi_orig = pi;
+        for (size_t q = 0; q < pi; q++) {
+            char qc = ph->data[q];
+            if (qc == '\'' || qc == ',' || qc == '%' || qc == '=') {
+                pi_orig--;
             }
         }
+        bool has_boundary = false;
+        for (size_t k = 0; k + 1 < code_len && !has_boundary; k++) {
+            size_t check_pos = pi_orig + k;
+            if (check_pos < rba_n && rba[check_pos]) {
+                has_boundary = true;
+            }
+        }
+        if (has_boundary) { r--; }
     }
+    return r;
 }
 
-// Step 5a: place secondary stress at even syllable distances from
-// primary.
-static bool place_secondary_stress(struct chars * ph,
-                                   const char * ph_in, size_t in_n,
-                                   bool step50_fired,
-                                   const bool * rba,
-                                   size_t rba_n) {
-    if (memchr(ph->data, '\'', ph->count) == NULL
-        || memchr(ph_in, ',', in_n) != NULL) {
-        return false;
-    }
-    struct sylinfo {
-        size_t pos;
-        const char * code;
-        size_t code_len;
-        bool stressable;
-        bool is_primary;
-        bool already_secondary;
-    };
-    enum { MAX_SYL6 = 256 };
-    struct sylinfo syls[MAX_SYL6];
-    int n = 0;
+static int32_t collect_secondary_syllables(const struct chars * ph,
+                                           const bool * rba, size_t rba_n,
+                                           struct sec_syl * syls) {
+    int32_t n = 0;
     size_t pi = 0;
     bool unstressed_prefix = false;
     bool secondary_prefix = false;
@@ -5624,173 +6355,243 @@ static bool place_secondary_stress(struct chars * ph,
             size_t code_len = 0;
             find_phoneme_code(ph->data, ph->count, pi,
                               &code, &code_len);
-            // Centering-diphthong split via rule boundaries.
             if (code_len >= 3 && !primary_prefix && !secondary_prefix) {
-                char last = code[code_len - 1];
-                if (last == '@' || last == '3') {
-                    size_t pi_orig = pi;
-                    for (size_t q = 0; q < pi; q++) {
-                        char qc = ph->data[q];
-                        if (qc == '\'' || qc == ',' || qc == '%'
-                            || qc == '=') { pi_orig--; }
-                    }
-                    bool has_boundary = false;
-                    for (size_t k = 0;
-                         k + 1 < code_len && !has_boundary; k++) {
-                        size_t check_pos = pi_orig + k;
-                        if (check_pos < rba_n && rba[check_pos]) {
-                            has_boundary = true;
-                        }
-                    }
-                    if (has_boundary) {
-                        code_len--;
-                    }
-                }
+                code_len = split_centering_diphthong(ph, pi, code,
+                                                     code_len,
+                                                     rba, rba_n);
             }
-            if (is_vowel_code(code, code_len)) {
-                if (code_len == 1 && code[0] == '@'
-                    && pi + 1 < ph->count
-                    && ph->data[pi + 1] == '-') {
-                    pi += code_len;
-                } else {
-                    bool is_schwa =
-                        (code_len == 1 && (code[0] == '@'
-                                        || code[0] == '3'))
-                     || (code_len == 2 && code[0] == '@'
-                         && (code[1] == '2' || code[1] == '5'
-                          || code[1] == 'L'));
-                    bool is_reduced =
-                        (code_len == 2 && code[0] == 'I'
-                         && (code[1] == '#' || code[1] == '2'))
-                     || (code_len == 1 && code[0] == 'i')
-                     || (code_len == 2 && code[0] == 'a'
-                         && code[1] == '#');
-                    syls[n].pos = pi;
-                    syls[n].code = code;
-                    syls[n].code_len = code_len;
-                    syls[n].is_primary = primary_prefix;
-                    syls[n].already_secondary = secondary_prefix;
-                    syls[n].stressable = !is_schwa && !is_reduced
-                        && !unstressed_prefix;
-                    n++;
-                    primary_prefix = false;
-                    secondary_prefix = false;
-                    unstressed_prefix = false;
-                    pi += code_len;
-                }
-            } else {
-                pi += code_len;
+            if (is_vowel_code(code, code_len)
+                && !is_hyphenated_schwa(ph, pi, code, code_len)) {
+                syls[n].pos               = pi;
+                syls[n].code              = code;
+                syls[n].code_len          = code_len;
+                syls[n].is_primary        = primary_prefix;
+                syls[n].already_secondary = secondary_prefix;
+                syls[n].stressable = !is_weak_vowel(code, code_len)
+                    && !unstressed_prefix;
+                n++;
+                primary_prefix = false;
+                secondary_prefix = false;
+                unstressed_prefix = false;
             }
+            pi += code_len;
         }
     }
-    int primary_idx = -1;
-    for (int si = 0; si < n && primary_idx < 0; si++) {
+    return n;
+}
+
+static int32_t find_primary_syllable(const struct sec_syl * syls, int32_t n) {
+    int32_t primary_idx = -1;
+    for (int32_t si = 0; si < n && primary_idx < 0; si++) {
         if (syls[si].is_primary) { primary_idx = si; }
     }
-    if (primary_idx >= 0 && n >= 3) {
-        int to_mark[MAX_SYL6];
-        int n_mark = 0;
-        // Backward scan: leftmost stressable at dist >= 2 from
-        // primary, then cascade rightward every 2 syllables.
-        if (primary_idx >= 2 && !step50_fired
-            && memchr(ph->data, ',', ph->count) == NULL) {
-            int first_sec = -1;
-            for (int idx = 0;
-                 idx <= primary_idx - 2 && first_sec < 0; idx++) {
-                if (syls[idx].stressable
-                    && !syls[idx].already_secondary
-                    && !syls[idx].is_primary) {
-                    first_sec = idx;
-                }
-            }
-            if (first_sec >= 0) {
-                to_mark[n_mark++] = first_sec;
-                for (int idx = first_sec + 2;
-                     idx <= primary_idx - 2; idx += 2) {
-                    if (syls[idx].stressable
-                        && !syls[idx].already_secondary
-                        && !syls[idx].is_primary) {
-                        to_mark[n_mark++] = idx;
-                    }
-                }
-                // Even-distance pass from primary backwards.
-                for (int dist = 2;
-                     primary_idx - dist >= 0; dist += 2) {
-                    int idx = primary_idx - dist;
-                    if (syls[idx].stressable
-                        && !syls[idx].already_secondary
-                        && !syls[idx].is_primary) {
-                        bool too_close = false;
-                        for (int m = 0; m < n_mark; m++) {
-                            int diff = to_mark[m] - idx;
-                            if (diff < 0) { diff = -diff; }
-                            if (diff < 2) { too_close = true; }
-                        }
-                        if (!too_close) { to_mark[n_mark++] = idx; }
-                    }
-                }
+    return primary_idx;
+}
+
+static bool syl_takes_secondary(const struct sec_syl * s) {
+    return s->stressable && !s->already_secondary && !s->is_primary;
+}
+
+static bool has_later_primary(const struct sec_syl * syls, int32_t n,
+                              int32_t from) {
+    bool later = false;
+    for (int32_t k = from; k < n && !later; k++) {
+        if (syls[k].is_primary) { later = true; }
+    }
+    return later;
+}
+
+// Leftmost stressable at distance >= 2 from the primary, then a
+// cascade rightward every 2 syllables, then an even-distance pass back
+// from the primary that skips anything within 2 of an existing mark.
+
+static void mark_secondary_backward(const struct sec_syl * syls,
+                                    int32_t primary_idx,
+                                    int32_t * to_mark, int32_t * n_mark) {
+    int32_t first_sec = -1;
+    for (int32_t idx = 0; idx <= primary_idx - 2 && first_sec < 0; idx++) {
+        if (syl_takes_secondary(&syls[idx])) { first_sec = idx; }
+    }
+    if (first_sec >= 0) {
+        to_mark[(*n_mark)++] = first_sec;
+        for (int32_t idx = first_sec + 2;
+             idx <= primary_idx - 2; idx += 2) {
+            if (syl_takes_secondary(&syls[idx])) {
+                to_mark[(*n_mark)++] = idx;
             }
         }
-        // Forward scan: distance 2, 4, ... from primary.
-        int stressable_after = 0;
-        for (int idx = primary_idx + 1; idx < n; idx++) {
-            if (syls[idx].stressable) { stressable_after++; }
-        }
-        if (stressable_after >= 1) {
-            bool stop_fwd = false;
-            for (int dist = 2;
-                 primary_idx + dist < n && !stop_fwd; dist += 2) {
-                int idx = primary_idx + dist;
-                bool later_primary = false;
-                for (int k = idx + 1; k < n && !later_primary; k++) {
-                    if (syls[k].is_primary) { later_primary = true; }
+        for (int32_t dist = 2; primary_idx - dist >= 0; dist += 2) {
+            int32_t idx = primary_idx - dist;
+            if (syl_takes_secondary(&syls[idx])) {
+                bool too_close = false;
+                for (int32_t m = 0; m < *n_mark; m++) {
+                    int32_t diff = to_mark[m] - idx;
+                    if (diff < 0) { diff = -diff; }
+                    if (diff < 2) { too_close = true; }
                 }
-                if (later_primary) {
-                    stop_fwd = true;
-                } else if (syls[idx].stressable
-                    && !syls[idx].already_secondary
-                    && !syls[idx].is_primary) {
-                    to_mark[n_mark++] = idx;
-                } else if (!syls[idx].stressable
-                    && !syls[idx].is_primary) {
-                    int idx2 = primary_idx + dist + 1;
-                    if (idx2 < n && syls[idx2].stressable
-                        && !syls[idx2].already_secondary
-                        && !syls[idx2].is_primary) {
-                        bool later_p2 = false;
-                        for (int k = idx2 + 1;
-                             k < n && !later_p2; k++) {
-                            if (syls[k].is_primary) {
-                                later_p2 = true;
-                            }
-                        }
-                        if (!later_p2) { to_mark[n_mark++] = idx2; }
-                    }
-                }
+                if (!too_close) { to_mark[(*n_mark)++] = idx; }
             }
-        }
-        // Sort descending so insertions don't shift earlier indices.
-        for (int i = 0; i < n_mark; i++) {
-            for (int j = i + 1; j < n_mark; j++) {
-                if (to_mark[j] > to_mark[i]) {
-                    int t = to_mark[i];
-                    to_mark[i] = to_mark[j];
-                    to_mark[j] = t;
-                }
-            }
-        }
-        for (int i = 0; i < n_mark; i++) {
-            int idx = to_mark[i];
-            chars_grow(ph, ph->count + 2);
-            memmove(ph->data + syls[idx].pos + 1,
-                    ph->data + syls[idx].pos,
-                    ph->count - syls[idx].pos);
-            ph->data[syls[idx].pos] = ',';
-            ph->count += 1;
-            ph->data[ph->count] = '\0';
         }
     }
-    return true;
+}
+
+// Distance 2, 4, ... after the primary; an unstressable landing spot
+// defers to the syllable one further on.
+
+static void mark_secondary_forward(const struct sec_syl * syls, int32_t n,
+                                   int32_t primary_idx,
+                                   int32_t * to_mark, int32_t * n_mark) {
+    int32_t stressable_after = 0;
+    for (int32_t idx = primary_idx + 1; idx < n; idx++) {
+        if (syls[idx].stressable) { stressable_after++; }
+    }
+    if (stressable_after >= 1) {
+        bool stop_fwd = false;
+        for (int32_t dist = 2;
+             primary_idx + dist < n && !stop_fwd; dist += 2) {
+            int32_t idx = primary_idx + dist;
+            if (has_later_primary(syls, n, idx + 1)) {
+                stop_fwd = true;
+            } else if (syl_takes_secondary(&syls[idx])) {
+                to_mark[(*n_mark)++] = idx;
+            } else if (!syls[idx].stressable
+                       && !syls[idx].is_primary) {
+                int32_t idx2 = primary_idx + dist + 1;
+                if (idx2 < n && syl_takes_secondary(&syls[idx2])
+                    && !has_later_primary(syls, n, idx2 + 1)) {
+                    to_mark[(*n_mark)++] = idx2;
+                }
+            }
+        }
+    }
+}
+
+// Descending, so each insertion leaves the earlier positions valid.
+
+static void sort_marks_desc(int32_t * to_mark, int32_t n_mark) {
+    for (int32_t i = 0; i < n_mark; i++) {
+        for (int32_t j = i + 1; j < n_mark; j++) {
+            if (to_mark[j] > to_mark[i]) {
+                int32_t t = to_mark[i];
+                to_mark[i] = to_mark[j];
+                to_mark[j] = t;
+            }
+        }
+    }
+}
+
+// Step 5a: place secondary stress at even syllable distances from
+// primary.
+
+static bool place_secondary_stress(struct chars * ph,
+                                   const char * ph_in, size_t in_n,
+                                   bool step50_fired,
+                                   const bool * rba,
+                                   size_t rba_n) {
+    bool ran = memchr(ph->data, '\'', ph->count) != NULL
+        && memchr(ph_in, ',', in_n) == NULL;
+    if (ran) {
+        struct sec_syl syls[MAX_SYL6];
+        int32_t n = collect_secondary_syllables(ph, rba, rba_n, syls);
+        int32_t primary_idx = find_primary_syllable(syls, n);
+        if (primary_idx >= 0 && n >= 3) {
+            int32_t to_mark[MAX_SYL6];
+            int32_t n_mark = 0;
+            if (primary_idx >= 2 && !step50_fired
+                && memchr(ph->data, ',', ph->count) == NULL) {
+                mark_secondary_backward(syls, primary_idx,
+                                        to_mark, &n_mark);
+            }
+            mark_secondary_forward(syls, n, primary_idx,
+                                   to_mark, &n_mark);
+            sort_marks_desc(to_mark, n_mark);
+            for (int32_t i = 0; i < n_mark; i++) {
+                insert_marker_at(ph, syls[to_mark[i]].pos, ',');
+            }
+        }
+    }
+    return ran;
+}
+
+
+// Steps 1-4e: the segmental changes that precede stress placement.
+
+static void apply_segmental_phases(struct chars * out,
+                                   bool is_en_us) {
+    apply_velar_nasal_assimilation(out);
+    if (is_en_us) {
+        apply_happy_tensing(out);
+        apply_vowel_reduction(out);
+        apply_lot_plus_r_merge(out);
+    }
+    strip_morpheme_schwa_r(out);
+    if (is_en_us) {
+        apply_bare_schwa_to_rhotic(out);
+        apply_linking_r(out);
+    }
+    if (is_en_us) {
+        apply_tion_stress_fix(out);
+        apply_ology_stress_fix(out);
+        apply_ic_stress_fix(out);
+    }
+}
+
+// Step 5 (primary) + 5.0 (= suffix shift) + 5a (secondary), then the
+// cleanup / trochaic / final-syllable secondaries.
+
+static void apply_stress_phases(struct chars * out,
+                                const struct chars * ph_in,
+                                bool is_strend,
+                                const bool * rba, size_t rba_n) {
+    bool starts_with_secondary = out->count > 0
+        && out->data[0] == ',';
+    bool is_rule_leading_comma = starts_with_secondary && rba_n > 0;
+    insert_primary_stress(out, is_strend, rba, rba_n);
+    bool step50_fired = apply_equals_suffix_stress_shift(out);
+    bool step5a_ran = place_secondary_stress(out,
+                                             ph_in->data,
+                                             ph_in->count,
+                                             step50_fired,
+                                             rba, rba_n);
+    cleanup_adjacent_secondary(out, step5a_ran,
+                               is_rule_leading_comma, rba, rba_n);
+    trochaic_compound_prefix(out, ph_in->data, ph_in->count,
+                             step5a_ran, starts_with_secondary);
+    final_syllable_secondary(out);
+}
+
+// The en-us-only reductions, step 5.5 onward, in order.
+
+static void apply_en_us_reductions(struct chars * out,
+                                   const bool * rba, size_t rba_n) {
+    reduce_bare_zero_after_ution(out);
+    reduce_e_unstressed(out, rba, rba_n);
+    reduce_v_between_sec_and_primary(out);
+    reduce_a_before_primary(out, rba_n > 0);
+    reduce_a_between_primary_and_sec(out, rba_n > 0);
+    reduce_zero_between_sec_and_primary(out);
+    reduce_zero_between_primary_and_sec(out);
+    reduce_zero_hash_before_primary(out);
+    reduce_bare_zero_before_primary(out, rba, rba_n);
+    reduce_e_pre_tonic_after_pct_nasal(out);
+    post_stress_i_before_syllabic_l(out);
+    reduce_3_long_to_short(out);
+    apply_flap_rule(out);
+    reduce_ness_suffix(out);
+    reduce_ou_hash_compound(out);
+    elide_ically_schwa(out);
+}
+
+// Late phases (5.5+ / 6+).
+
+static void apply_reduction_phases(struct chars * out,
+                                   const struct chars * ph_in,
+                                   bool is_en_us,
+                                   const bool * rba, size_t rba_n) {
+    if (is_en_us) { reduce_zero_diminished(out); }
+    demote_adjacent_primaries(out, ph_in->data, ph_in->count);
+    if (is_en_us) { apply_en_us_reductions(out, rba, rba_n); }
+    add_compound_syllabic_n_stress(out);
 }
 
 // process_phoneme_string: full prosody pipeline. Steps 1..6f all
@@ -5815,61 +6616,9 @@ static void process_phoneme_string(const char * in, size_t in_n,
         if (out->data[i] == '\x02') { out->data[i] = ','; }
     }
     bool is_en_us = true;
-    // Steps 1-3c.
-    apply_velar_nasal_assimilation(out);
-    if (is_en_us) {
-        apply_happy_tensing(out);
-        apply_vowel_reduction(out);
-        apply_lot_plus_r_merge(out);
-    }
-    strip_morpheme_schwa_r(out);
-    // Steps 4 + 4b.
-    if (is_en_us) {
-        apply_bare_schwa_to_rhotic(out);
-        apply_linking_r(out);
-    }
-    // Steps 4c/d/e.
-    if (is_en_us) {
-        apply_tion_stress_fix(out);
-        apply_ology_stress_fix(out);
-        apply_ic_stress_fix(out);
-    }
-    // Step 5 (primary) + 5.0 (= suffix shift) + 5a (secondary)
-    // + cleanup / trochaic / final-syllable secondaries.
-    bool starts_with_secondary = out->count > 0
-        && out->data[0] == ',';
-    bool is_rule_leading_comma = starts_with_secondary && rba_n > 0;
-    insert_primary_stress(out, is_strend, rba, rba_n);
-    bool step50_fired = apply_equals_suffix_stress_shift(out);
-    bool step5a_ran = place_secondary_stress(out,
-                                             ph_in.data, ph_in.count,
-                                             step50_fired,
-                                             rba, rba_n);
-    cleanup_adjacent_secondary(out, step5a_ran,
-                               is_rule_leading_comma, rba, rba_n);
-    trochaic_compound_prefix(out, ph_in.data, ph_in.count,
-                             step5a_ran, starts_with_secondary);
-    final_syllable_secondary(out);
-    // Late phases (5.5+ / 6+).
-    if (is_en_us) { reduce_zero_diminished(out); }
-    demote_adjacent_primaries(out, ph_in.data, ph_in.count);
-    if (is_en_us) { reduce_bare_zero_after_ution(out); }
-    if (is_en_us) { reduce_e_unstressed(out, rba, rba_n); }
-    if (is_en_us) { reduce_v_between_sec_and_primary(out); }
-    if (is_en_us) { reduce_a_before_primary(out, rba_n > 0); }
-    if (is_en_us) { reduce_a_between_primary_and_sec(out, rba_n > 0); }
-    if (is_en_us) { reduce_zero_between_sec_and_primary(out); }
-    if (is_en_us) { reduce_zero_between_primary_and_sec(out); }
-    if (is_en_us) { reduce_zero_hash_before_primary(out); }
-    if (is_en_us) { reduce_bare_zero_before_primary(out, rba, rba_n); }
-    if (is_en_us) { reduce_e_pre_tonic_after_pct_nasal(out); }
-    if (is_en_us) { post_stress_i_before_syllabic_l(out); }
-    if (is_en_us) { reduce_3_long_to_short(out); }
-    if (is_en_us) { apply_flap_rule(out); }
-    if (is_en_us) { reduce_ness_suffix(out); }
-    if (is_en_us) { reduce_ou_hash_compound(out); }
-    if (is_en_us) { elide_ically_schwa(out); }
-    add_compound_syllabic_n_stress(out);
+    apply_segmental_phases(out, is_en_us);
+    apply_stress_phases(out, &ph_in, is_strend, rba, rba_n);
+    apply_reduction_phases(out, &ph_in, is_en_us, rba, rba_n);
     chars_free(&ph_in);
 }
 
@@ -5914,7 +6663,7 @@ static void check_main_dict(struct phonemizer * p,
     if (raw != NULL) {
         struct chars temp = {0};
         chars_put(&temp, raw->data, raw->count);
-        int * sp = imap_get(&p->stress_pos, norm, nn);
+        int32_t * sp = imap_get(&p->stress_pos, norm, nn);
         if (sp != NULL) {
             struct chars stressed = {0};
             apply_stress_position(temp.data, temp.count, *sp,
@@ -5932,6 +6681,33 @@ static void check_main_dict(struct phonemizer * p,
 // Hyphenated compound: split on '-', phonemize each segment via
 // word_to_phonemes, concatenate. Returns empty if any segment is
 // empty or contains no letters or fails to phonemize.
+static bool segment_has_letter(const char * norm, size_t seg_start,
+                               size_t seg_len) {
+    bool has_letter = false;
+    for (size_t k = 0; k < seg_len && !has_letter; k++) {
+        if (isalpha((unsigned char)norm[seg_start + k])) {
+            has_letter = true;
+        }
+    }
+    return has_letter;
+}
+
+// A segment that phonemizes to nothing aborts the whole word.
+
+static bool append_hyphen_segment(struct phonemizer * p,
+                                  const char * norm,
+                                  size_t seg_start, size_t seg_len,
+                                  struct chars * accum) {
+    struct chars seg_ipa = {0};
+    word_to_phonemes(p, norm + seg_start, seg_len, &seg_ipa);
+    bool got = seg_ipa.count > 0;
+    if (got) {
+        chars_put(accum, seg_ipa.data, seg_ipa.count);
+    }
+    chars_free(&seg_ipa);
+    return got;
+}
+
 static void check_hyphenated(struct phonemizer * p,
                              const char * norm, size_t nn,
                              struct chars * out) {
@@ -5950,32 +6726,14 @@ static void check_hyphenated(struct phonemizer * p,
             size_t seg_end = next_h != NULL
                 ? (size_t)(next_h - norm) : nn;
             size_t seg_len = seg_end - seg_start;
-            if (seg_len == 0) {
-                processing = false;
-            } else {
-                bool has_letter = false;
-                for (size_t k = 0; k < seg_len && !has_letter; k++) {
-                    if (isalpha((unsigned char)norm[seg_start + k])) {
-                        has_letter = true;
-                    }
-                }
-                if (!has_letter) {
-                    processing = false;
-                } else {
-                    struct chars seg_ipa = {0};
-                    word_to_phonemes(p, norm + seg_start, seg_len,
-                                     &seg_ipa);
-                    if (seg_ipa.count == 0) {
-                        processing = false;
-                    } else {
-                        chars_put(&accum, seg_ipa.data,
-                                  seg_ipa.count);
-                        seg_start = next_h != NULL
-                            ? (size_t)(next_h - norm) + 1
-                            : nn;
-                    }
-                    chars_free(&seg_ipa);
-                }
+            processing = seg_len > 0
+                && segment_has_letter(norm, seg_start, seg_len)
+                && append_hyphen_segment(p, norm, seg_start,
+                                         seg_len, &accum);
+            if (processing) {
+                seg_start = next_h != NULL
+                    ? (size_t)(next_h - norm) + 1
+                    : nn;
             }
         }
         if (processing && accum.count > 0) {
@@ -5985,8 +6743,23 @@ static void check_hyphenated(struct phonemizer * p,
     }
 }
 
+static const char * const TWO_CHAR_CODES[] = {
+    "tS", "dZ", "O:", "A:", "i:", "u:", "e:", "I#", "I2", "@L",
+    "3:", "eI", "aI", "aU", "oU", "OI", NULL
+};
+
+static bool is_two_char_code(const char * two) {
+    bool found = false;
+    for (int32_t i = 0; TWO_CHAR_CODES[i] != NULL && !found; i++) {
+        found = TWO_CHAR_CODES[i][0] == two[0]
+             && TWO_CHAR_CODES[i][1] == two[1];
+    }
+    return found;
+}
+
 // Find the last phoneme code in `rc[0..rcn)` (skipping stress and
 // boundary markers). Writes it to *out (caller-owned).
+
 static void last_phoneme_code(const char * rc, size_t rcn,
                               struct chars * out) {
     out->count = 0;
@@ -6001,24 +6774,7 @@ static void last_phoneme_code(const char * rc, size_t rcn,
             chars_put_byte(out, c);
             if (ri >= 1) {
                 char two[2] = { rc[ri - 1], c };
-                bool is_two_char =
-                    (two[0] == 't' && two[1] == 'S')
-                 || (two[0] == 'd' && two[1] == 'Z')
-                 || (two[0] == 'O' && two[1] == ':')
-                 || (two[0] == 'A' && two[1] == ':')
-                 || (two[0] == 'i' && two[1] == ':')
-                 || (two[0] == 'u' && two[1] == ':')
-                 || (two[0] == 'e' && two[1] == ':')
-                 || (two[0] == 'I' && two[1] == '#')
-                 || (two[0] == 'I' && two[1] == '2')
-                 || (two[0] == '@' && two[1] == 'L')
-                 || (two[0] == '3' && two[1] == ':')
-                 || (two[0] == 'e' && two[1] == 'I')
-                 || (two[0] == 'a' && two[1] == 'I')
-                 || (two[0] == 'a' && two[1] == 'U')
-                 || (two[0] == 'o' && two[1] == 'U')
-                 || (two[0] == 'O' && two[1] == 'I');
-                if (is_two_char) {
+                if (is_two_char_code(two)) {
                     out->count = 0;
                     chars_put(out, two, 2);
                 }
@@ -6028,9 +6784,95 @@ static void last_phoneme_code(const char * rc, size_t rcn,
     }
 }
 
+// Base phoneme codes for the possessive: the dictionary form when
+// there is one, the rule output otherwise.
+
+static void possessive_base_codes(struct phonemizer * p,
+                                  const char * norm, size_t base_n,
+                                  struct chars * raw_code) {
+    struct chars * d = smap_get(&p->dict, norm, base_n);
+    if (d != NULL) {
+        process_phoneme_string(d->data, d->count, false, raw_code);
+    } else {
+        struct chars rules_out = {0};
+        apply_rules(p, norm, base_n, true, -1, false, false,
+                    NULL, 0, NULL, 0, &rules_out);
+        process_phoneme_string(rules_out.data, rules_out.count, false,
+                               raw_code);
+        chars_free(&rules_out);
+    }
+}
+
+// tS, dZ, s, z, S, Z.
+
+static bool is_sibilant_code(const struct chars * ph) {
+    return (ph->count == 2 && memcmp(ph->data, "tS", 2) == 0)
+        || (ph->count == 2 && memcmp(ph->data, "dZ", 2) == 0)
+        || (ph->count == 1 && (ph->data[0] == 's' || ph->data[0] == 'z'
+                            || ph->data[0] == 'S'
+                            || ph->data[0] == 'Z'));
+}
+
+static const char * possessive_after_ch(const struct chars * last_ph,
+                                        size_t * poss_n) {
+    static const char unvoiced[] = "ptkfsTSx";
+    const char * poss = "z";
+    *poss_n = 1;
+    if (is_sibilant_code(last_ph)) {
+        poss = "I2z"; *poss_n = 3;
+    } else if (last_ph->count > 0
+        && strchr(unvoiced, last_ph->data[0]) != NULL) {
+        poss = "s"; *poss_n = 1;
+    }
+    return poss;
+}
+
+static const char * possessive_by_last_letter(char lc,
+                                              size_t * poss_n) {
+    const char * poss = "z";
+    *poss_n = 1;
+    if (lc == 's' || lc == 'z' || lc == 'x') {
+        poss = "I#z"; *poss_n = 3;
+    } else if (lc == 'f' || lc == 'p' || lc == 't' || lc == 'k') {
+        poss = "s"; *poss_n = 1;
+    }
+    return poss;
+}
+
+// The spelling of the base decides first and its last phoneme second.
+
+static const char * possessive_allomorph(const char * norm,
+                                         size_t base_n,
+                                         const struct chars * last_ph,
+                                         size_t * poss_n) {
+    const char * poss = "z";
+    *poss_n = 1;
+    bool ends_och = base_n >= 3
+        && memcmp(norm + base_n - 3, "och", 3) == 0;
+    bool ends_ch = base_n >= 2
+        && memcmp(norm + base_n - 2, "ch", 2) == 0;
+    bool ends_se = base_n >= 2
+        && memcmp(norm + base_n - 2, "se", 2) == 0;
+    bool ends_ce = base_n >= 2
+        && memcmp(norm + base_n - 2, "ce", 2) == 0;
+    bool ends_sh = base_n >= 2
+        && memcmp(norm + base_n - 2, "sh", 2) == 0;
+    if (ends_och) {
+        poss = "s"; *poss_n = 1;
+    } else if (ends_ch) {
+        poss = possessive_after_ch(last_ph, poss_n);
+    } else if (ends_se || ends_ce || ends_sh) {
+        poss = "I#z"; *poss_n = 3;
+    } else if (base_n > 0) {
+        poss = possessive_by_last_letter(norm[base_n - 1], poss_n);
+    }
+    return poss;
+}
+
 // Possessive "'s" suffix. Word ends in apostrophe-s; phonemize the
 // base + a voiced/unvoiced/syllabic 's' allomorph based on the
 // orthographic + phonemic context.
+
 static void check_possessive(struct phonemizer * p,
                              const char * norm, size_t nn,
                              struct chars * out) {
@@ -6044,68 +6886,13 @@ static void check_possessive(struct phonemizer * p,
         word_to_phonemes(p, norm, base_n, &base_ipa);
         if (base_ipa.count > 0) {
             struct chars raw_code = {0};
-            // Look up base in dict; else apply rules.
-            struct chars * d = smap_get(&p->dict, norm, base_n);
-            if (d != NULL) {
-                process_phoneme_string(d->data, d->count, false,
-                                       &raw_code);
-            } else {
-                struct chars rules_out = {0};
-                apply_rules(p, norm, base_n, true, -1,
-                            false, false,
-                            NULL, 0, NULL, 0, &rules_out);
-                process_phoneme_string(rules_out.data,
-                                       rules_out.count, false,
-                                       &raw_code);
-                chars_free(&rules_out);
-            }
-            // Determine the suffix allomorph from base orthography
-            // + last phoneme code.
-            const char * poss = "z";
-            size_t poss_n = 1;
+            possessive_base_codes(p, norm, base_n, &raw_code);
             struct chars last_ph = {0};
             last_phoneme_code(raw_code.data, raw_code.count, &last_ph);
-            bool ends_och = base_n >= 3
-                && memcmp(norm + base_n - 3, "och", 3) == 0;
-            bool ends_ch = base_n >= 2
-                && memcmp(norm + base_n - 2, "ch", 2) == 0;
-            bool ends_se = base_n >= 2
-                && memcmp(norm + base_n - 2, "se", 2) == 0;
-            bool ends_ce = base_n >= 2
-                && memcmp(norm + base_n - 2, "ce", 2) == 0;
-            bool ends_sh = base_n >= 2
-                && memcmp(norm + base_n - 2, "sh", 2) == 0;
-            if (ends_och) {
-                poss = "s"; poss_n = 1;
-            } else if (ends_ch) {
-                // Sibilant phonemes (tS / dZ / s / z / S / Z) -> I2z.
-                bool is_sib =
-                    (last_ph.count == 2 && memcmp(last_ph.data, "tS", 2) == 0)
-                 || (last_ph.count == 2 && memcmp(last_ph.data, "dZ", 2) == 0)
-                 || (last_ph.count == 1 && last_ph.data[0] == 's')
-                 || (last_ph.count == 1 && last_ph.data[0] == 'z')
-                 || (last_ph.count == 1 && last_ph.data[0] == 'S')
-                 || (last_ph.count == 1 && last_ph.data[0] == 'Z');
-                static const char unvoiced[] = "ptkfsTSx";
-                if (is_sib) {
-                    poss = "I2z"; poss_n = 3;
-                } else if (last_ph.count > 0
-                    && strchr(unvoiced, last_ph.data[0]) != NULL) {
-                    poss = "s"; poss_n = 1;
-                } else {
-                    poss = "z"; poss_n = 1;
-                }
-            } else if (ends_se || ends_ce || ends_sh) {
-                poss = "I#z"; poss_n = 3;
-            } else if (base_n > 0) {
-                char lc = norm[base_n - 1];
-                if (lc == 's' || lc == 'z' || lc == 'x') {
-                    poss = "I#z"; poss_n = 3;
-                } else if (lc == 'f' || lc == 'p'
-                        || lc == 't' || lc == 'k') {
-                    poss = "s"; poss_n = 1;
-                }
-            }
+            size_t poss_n = 1;
+            const char * poss = possessive_allomorph(norm, base_n,
+                                                     &last_ph,
+                                                     &poss_n);
             struct chars combined = {0};
             chars_put(&combined, raw_code.data, raw_code.count);
             chars_put(&combined, poss, poss_n);
@@ -6135,128 +6922,138 @@ static void check_single_letter(struct phonemizer * p,
     }
 }
 
+// A prefix is usable when it is at least 4 letters, leaves a suffix of
+// at least 2 with a vowel in it, and that suffix is either 4 letters
+// long or a dictionary word in its own right.
+
+static bool compound_prefix_fits(struct phonemizer * p,
+                                 const char * norm, size_t nn,
+                                 const struct chars * pref) {
+    bool live = pref->count >= 4 && pref->count < nn;
+    if (live) {
+        size_t sfx_len = nn - pref->count;
+        const char * sfx = norm + pref->count;
+        live = sfx_len >= 2
+            && memcmp(norm, pref->data, pref->count) == 0
+            && has_any_vowel_letter(sfx, sfx_len);
+        if (live && sfx_len < 4) {
+            live = smap_get(&p->dict, sfx, sfx_len) != NULL
+                || smap_get(&p->verb_dict, sfx, sfx_len) != NULL;
+        }
+    }
+    return live;
+}
+
+static const char * const MC_VOWELS[] = {
+    "O@","o@","U@","A@","e@","i@","aI@3","aI3",
+    "aU@","aI@","i@3","3:r","A:r","o@r","A@r","e@r",
+    "eI","aI","aU","OI","oU","IR","VR","3:","A:",
+    "i:","u:","O:","e:","a:","aa","@L","@2","@5",
+    "I2","I#","E2","E#","e#","a#","a2","0#","02",
+    "O2","A#", NULL
+};
+
+static int32_t count_prefix_phoneme_vowels(const struct chars * pfx_ph) {
+    int32_t nvowels = 0;
+    size_t pi = 0;
+    while (pi < pfx_ph->count) {
+        char c = pfx_ph->data[pi];
+        if (c == '\'' || c == ',' || c == '%' || c == '=') {
+            pi++;
+        } else {
+            bool matched = false;
+            for (int32_t mi = 0; MC_VOWELS[mi] != NULL && !matched; mi++) {
+                size_t ml = strlen(MC_VOWELS[mi]);
+                if (pi + ml <= pfx_ph->count
+                    && memcmp(pfx_ph->data + pi, MC_VOWELS[mi],
+                              ml) == 0) {
+                    nvowels++;
+                    pi += ml;
+                    matched = true;
+                }
+            }
+            if (!matched) {
+                if (is_vowel_code(&pfx_ph->data[pi], 1)) { nvowels++; }
+                pi++;
+            }
+        }
+    }
+    return nvowels;
+}
+
+// A two-syllable prefix keeps a secondary; a one-syllable one loses
+// its stress entirely.
+
+static void demote_prefix_stress(struct chars * pfx_ph, int32_t nvowels) {
+    if (nvowels >= 2) {
+        replace_first_char(pfx_ph, '\'', ',');
+    } else {
+        size_t w = 0;
+        for (size_t r = 0; r < pfx_ph->count; r++) {
+            if (pfx_ph->data[r] != '\'' && pfx_ph->data[r] != ',') {
+                pfx_ph->data[w++] = pfx_ph->data[r];
+            }
+        }
+        pfx_ph->count = w;
+        if (pfx_ph->data != NULL) {
+            pfx_ph->data[pfx_ph->count] = '\0';
+        }
+    }
+}
+
+// A "$N" entry for the whole compound overrides the joined stress.
+
+static void apply_stress_pos_override(struct phonemizer * p,
+                                      const char * norm, size_t nn,
+                                      struct chars * combined) {
+    int32_t * sp = imap_get(&p->stress_pos, norm, nn);
+    if (sp != NULL) {
+        struct chars stressed = {0};
+        apply_stress_position(combined->data, combined->count, *sp,
+                              &stressed);
+        struct chars processed = {0};
+        process_phoneme_string(stressed.data, stressed.count, false,
+                               &processed);
+        combined->count = 0;
+        chars_put(combined, processed.data, processed.count);
+        chars_free(&stressed);
+        chars_free(&processed);
+    }
+}
+
 // Compound-prefix decomposition: find a prefix from
 // compound_prefixes that matches the word, recurse on the suffix,
 // combine with stress demotion.
+
 static void check_compound_prefixes(struct phonemizer * p,
                                     const char * norm, size_t nn,
                                     struct chars * out) {
     out->count = 0;
-    if (nn < 5 || p->compound_prefixes.count == 0) { return; }
     bool found = false;
-    for (size_t i = 0;
-         i < p->compound_prefixes.count && !found; i++) {
-        const struct strpair * cp = &p->compound_prefixes.data[i];
-        const struct chars * pref = &cp->a;
-        const struct chars * pref_ph = &cp->b;
-        bool live = pref->count >= 4 && pref->count < nn;
-        size_t sfx_len = 0;
-        if (live) {
-            sfx_len = nn - pref->count;
-            if (sfx_len < 2) { live = false; }
-            if (live && memcmp(norm, pref->data, pref->count) != 0) {
-                live = false;
+    if (nn >= 5) {
+        for (size_t i = 0;
+             i < p->compound_prefixes.count && !found; i++) {
+            const struct strpair * cp = &p->compound_prefixes.data[i];
+            if (compound_prefix_fits(p, norm, nn, &cp->a)) {
+                size_t sfx_len = nn - cp->a.count;
+                struct chars pfx_ph = {0};
+                process_phoneme_string(cp->b.data, cp->b.count, false,
+                                       &pfx_ph);
+                demote_prefix_stress(&pfx_ph,
+                    count_prefix_phoneme_vowels(&pfx_ph));
+                struct chars sfx_ph = {0};
+                word_to_phonemes(p, norm + cp->a.count, sfx_len,
+                                 &sfx_ph);
+                struct chars combined = {0};
+                chars_put(&combined, pfx_ph.data, pfx_ph.count);
+                chars_put(&combined, sfx_ph.data, sfx_ph.count);
+                apply_stress_pos_override(p, norm, nn, &combined);
+                chars_put(out, combined.data, combined.count);
+                chars_free(&combined);
+                chars_free(&sfx_ph);
+                chars_free(&pfx_ph);
+                found = true;
             }
-            if (live && !has_any_vowel_letter(
-                    norm + pref->count, sfx_len)) {
-                live = false;
-            }
-            // Suffix must be >=4 chars OR be a recognized dict word.
-            if (live && sfx_len < 4) {
-                bool in_dict = smap_get(&p->dict,
-                                        norm + pref->count, sfx_len)
-                                != NULL
-                            || smap_get(&p->verb_dict,
-                                        norm + pref->count, sfx_len)
-                                != NULL;
-                if (!in_dict) { live = false; }
-            }
-        }
-        if (live) {
-            // Process prefix phonemes (currently pass-through).
-            struct chars pfx_ph = {0};
-            process_phoneme_string(pref_ph->data, pref_ph->count,
-                                   false, &pfx_ph);
-            // Count vowels in pfx_ph (multi-char-aware).
-            static const char * const MC_VOWELS[] = {
-                "O@","o@","U@","A@","e@","i@","aI@3","aI3",
-                "aU@","aI@","i@3","3:r","A:r","o@r","A@r","e@r",
-                "eI","aI","aU","OI","oU","IR","VR","3:","A:",
-                "i:","u:","O:","e:","a:","aa","@L","@2","@5",
-                "I2","I#","E2","E#","e#","a#","a2","0#","02",
-                "O2","A#", NULL
-            };
-            int nvowels = 0;
-            size_t pi = 0;
-            while (pi < pfx_ph.count) {
-                char c = pfx_ph.data[pi];
-                if (c == '\'' || c == ','
-                    || c == '%' || c == '=') {
-                    pi++;
-                } else {
-                    bool matched = false;
-                    for (int mi = 0;
-                         MC_VOWELS[mi] != NULL && !matched; mi++) {
-                        size_t ml = strlen(MC_VOWELS[mi]);
-                        if (pi + ml <= pfx_ph.count
-                            && memcmp(pfx_ph.data + pi,
-                                      MC_VOWELS[mi], ml) == 0) {
-                            nvowels++;
-                            pi += ml;
-                            matched = true;
-                        }
-                    }
-                    if (!matched) {
-                        if (is_vowel_code(&pfx_ph.data[pi], 1)) {
-                            nvowels++;
-                        }
-                        pi++;
-                    }
-                }
-            }
-            if (nvowels >= 2) {
-                replace_first_char(&pfx_ph, '\'', ',');
-            } else {
-                // Strip all stress markers.
-                size_t w = 0;
-                for (size_t r = 0; r < pfx_ph.count; r++) {
-                    if (pfx_ph.data[r] != '\''
-                        && pfx_ph.data[r] != ',') {
-                        pfx_ph.data[w++] = pfx_ph.data[r];
-                    }
-                }
-                pfx_ph.count = w;
-                if (pfx_ph.data != NULL) {
-                    pfx_ph.data[pfx_ph.count] = '\0';
-                }
-            }
-            // Recurse on suffix via full word_to_phonemes.
-            struct chars sfx_ph = {0};
-            word_to_phonemes(p, norm + pref->count, sfx_len,
-                             &sfx_ph);
-            struct chars combined = {0};
-            chars_put(&combined, pfx_ph.data, pfx_ph.count);
-            chars_put(&combined, sfx_ph.data, sfx_ph.count);
-            // $N stress override on the full word.
-            int * sp = imap_get(&p->stress_pos, norm, nn);
-            if (sp != NULL) {
-                struct chars stressed = {0};
-                apply_stress_position(combined.data, combined.count,
-                                      *sp, &stressed);
-                struct chars processed = {0};
-                process_phoneme_string(stressed.data,
-                                       stressed.count, false,
-                                       &processed);
-                combined.count = 0;
-                chars_put(&combined, processed.data, processed.count);
-                chars_free(&stressed);
-                chars_free(&processed);
-            }
-            chars_put(out, combined.data, combined.count);
-            chars_free(&combined);
-            chars_free(&sfx_ph);
-            chars_free(&pfx_ph);
-            found = true;
         }
     }
 }
@@ -6270,7 +7067,7 @@ static void apply_rules_fallback(struct phonemizer * p,
     struct chars raw_ph = {0};
     apply_rules(p, norm, nn, true, -1, false, false,
                 NULL, 0, NULL, 0, &raw_ph);
-    int * sp = imap_get(&p->stress_pos, norm, nn);
+    int32_t * sp = imap_get(&p->stress_pos, norm, nn);
     if (sp != NULL) {
         struct chars stressed = {0};
         apply_stress_position(raw_ph.data, raw_ph.count, *sp,
@@ -6291,6 +7088,55 @@ static void apply_rules_fallback(struct phonemizer * p,
 // struct chars * out; "out->count == 0" means "this arm passed".
 // ---------------------------------------------------------------------------
 
+// The magic-e spelling of the stem, preferring the plain dictionary
+// over the verb dictionary and skipping "only"-flagged entries.
+
+static void stem_e_dict_phonemes(struct phonemizer * p,
+                                 const char * stem, size_t sn,
+                                 struct chars * out) {
+    struct chars sx = {0};
+    chars_put(&sx, stem, sn);
+    chars_put_byte(&sx, 'e');
+    struct chars * je = smap_get(&p->dict, sx.data, sx.count);
+    bool je_onlys = je != NULL
+        && (set_has(&p->onlys_words, sx.data, sx.count)
+            || set_has(&p->only_words, sx.data, sx.count));
+    if (je != NULL && !je_onlys) {
+        chars_put(out, je->data, je->count);
+    } else {
+        struct chars * ve = smap_get(&p->verb_dict, sx.data,
+                                     sx.count);
+        if (ve != NULL) {
+            chars_put(out, ve->data, ve->count);
+        }
+    }
+    chars_free(&sx);
+}
+
+// A noun-form or verb-flagged stem keeps the stress the rules gave
+// it; anything else takes the stress-table position.
+
+static void stem_rules_phonemes(struct phonemizer * p,
+                                const char * stem, size_t sn,
+                                struct chars * out) {
+    int32_t stem_alt_flags = set_has(&p->verb_flag_words, stem, sn)
+        ? 1 : -1;
+    struct chars raw = {0};
+    apply_rules(p, stem, sn, true, stem_alt_flags, false, false,
+                NULL, 0, NULL, 0, &raw);
+    int32_t * sp = imap_get(&p->stress_pos, stem, sn);
+    if (sp != NULL && !set_has(&p->noun_form_stress, stem, sn)
+        && !set_has(&p->verb_flag_words, stem, sn)) {
+        struct chars stressed = {0};
+        apply_stress_position(raw.data, raw.count, *sp, &stressed);
+        raw.count = 0;
+        chars_put(&raw, stressed.data, stressed.count);
+        chars_free(&stressed);
+    }
+    process_phoneme_string(raw.data, raw.count, false, out);
+    chars_free(&raw);
+}
+
 // Stem phonemizer. Tries verb_dict, dict, magic-e variants, and a
 // rules + stress-position fallback. Returns raw dict phonemes (with
 // \x01 boundaries) for dict hits, or processed phonemes from the
@@ -6309,48 +7155,13 @@ static void get_stem_phonemes(struct phonemizer * p,
                          || set_has(&p->only_words, stem, sn);
             struct chars * jt = smap_get(&p->dict, stem, sn);
             if (jt == NULL || is_onlys) {
-                struct chars sx = {0};
-                chars_put(&sx, stem, sn);
-                chars_put_byte(&sx, 'e');
-                struct chars * je = smap_get(&p->dict,
-                                             sx.data, sx.count);
-                bool je_onlys = je != NULL && (
-                    set_has(&p->onlys_words, sx.data, sx.count) ||
-                    set_has(&p->only_words, sx.data, sx.count));
-                if (je != NULL && !je_onlys) {
-                    chars_put(out, je->data, je->count);
-                } else {
-                    struct chars * ve = smap_get(&p->verb_dict,
-                                                 sx.data, sx.count);
-                    if (ve != NULL) {
-                        chars_put(out, ve->data, ve->count);
-                    }
-                }
-                chars_free(&sx);
+                stem_e_dict_phonemes(p, stem, sn, out);
             }
             if (out->count == 0 && jt != NULL && !is_onlys) {
                 chars_put(out, jt->data, jt->count);
             }
             if (out->count == 0) {
-                int stem_alt_flags =
-                    set_has(&p->verb_flag_words, stem, sn) ? 1 : -1;
-                struct chars raw = {0};
-                apply_rules(p, stem, sn, true, stem_alt_flags,
-                            false, false, NULL, 0, NULL, 0, &raw);
-                int * sp = imap_get(&p->stress_pos, stem, sn);
-                if (sp != NULL
-                    && !set_has(&p->noun_form_stress, stem, sn)
-                    && !set_has(&p->verb_flag_words, stem, sn)) {
-                    struct chars stressed = {0};
-                    apply_stress_position(raw.data, raw.count,
-                                          *sp, &stressed);
-                    raw.count = 0;
-                    chars_put(&raw, stressed.data, stressed.count);
-                    chars_free(&stressed);
-                }
-                process_phoneme_string(raw.data, raw.count, false,
-                                       out);
-                chars_free(&raw);
+                stem_rules_phonemes(p, stem, sn, out);
             }
         }
         if (out->count > 0
@@ -6390,6 +7201,59 @@ static void try_ing_non_magic_e_stem_fallbacks(
     }
 }
 
+static void stem_phonemes_with_e(struct phonemizer * p,
+                                 const char * base, size_t bn,
+                                 struct chars * sph) {
+    struct chars sx = {0};
+    chars_put(&sx, base, bn);
+    chars_put_byte(&sx, 'e');
+    get_stem_phonemes(p, sx.data, sx.count, sph);
+    chars_free(&sx);
+}
+
+static int32_t count_vowel_groups(const char * s, size_t n) {
+    int32_t vowel_groups = 0;
+    bool in_v = false;
+    for (size_t i = 0; i < n; i++) {
+        if (is_vowel_letter(s[i])) {
+            if (!in_v) { vowel_groups++; in_v = true; }
+        } else {
+            in_v = false;
+        }
+    }
+    return vowel_groups;
+}
+
+// A doubled final consonant over a two-syllable prefix undoubles
+// ("controlled" -> "control").
+
+static bool prefers_undoubled_stem(const char * base, size_t bn,
+                                   bool base_has_double) {
+    return base_has_double && count_vowel_groups(base, bn - 2) >= 2;
+}
+
+// "-ns" / "-rs" stems restore the magic e before anything else.
+
+static bool ed_ns_rs_wants_e(const char * base, size_t bn,
+                             bool base_has_stress_override) {
+    return !base_has_stress_override && bn >= 2
+        && (memcmp(base + bn - 2, "ns", 2) == 0
+            || memcmp(base + bn - 2, "rs", 2) == 0);
+}
+
+// A consonant-final stem that has a vowel somewhere gets one last
+// try with a magic e.
+
+static void ed_consonant_final_magic_e(struct phonemizer * p,
+                                       const char * base, size_t bn,
+                                       struct chars * sph) {
+    if (sph->count == 0 && bn > 0
+        && !is_vowel_letter(base[bn - 1])
+        && has_any_vowel_letter(base, bn)) {
+        stem_phonemes_with_e(p, base, bn, sph);
+    }
+}
+
 // -ed non-magic-e stem fallbacks. Doubled-consonant CVC stems with
 // 2+ vowel groups prefer the undoubled form (e.g. "controlled" ->
 // "control"). Otherwise: -rs/-ns magic-e first, then bare stem,
@@ -6403,46 +7267,76 @@ static void try_ed_non_magic_e_stem_fallbacks(
     bool base_has_double = bn >= 2
         && base[bn - 1] == base[bn - 2]
         && strchr(CVC_DOUBLE_CONS, base[bn - 1]) != NULL;
-    bool prefer_undoubled = false;
-    if (base_has_double) {
-        int vowel_groups = 0;
-        bool in_v = false;
-        size_t prefix_n = bn - 2;
-        for (size_t i = 0; i < prefix_n; i++) {
-            if (is_vowel_letter(base[i])) {
-                if (!in_v) { vowel_groups++; in_v = true; }
-            } else {
-                in_v = false;
-            }
-        }
-        prefer_undoubled = (vowel_groups >= 2);
-    }
+    bool prefer_undoubled = prefers_undoubled_stem(base, bn,
+                                                   base_has_double);
     if (sph->count == 0 && base_has_double && prefer_undoubled) {
         get_stem_phonemes(p, base, bn - 1, sph);
     }
-    bool try_e_first = sph->count == 0 && !base_has_stress_override
-        && bn >= 2 && (memcmp(base + bn - 2, "ns", 2) == 0
-                       || memcmp(base + bn - 2, "rs", 2) == 0);
-    if (try_e_first) {
-        struct chars sx = {0};
-        chars_put(&sx, base, bn);
-        chars_put_byte(&sx, 'e');
-        get_stem_phonemes(p, sx.data, sx.count, sph);
-        chars_free(&sx);
-    }
+    bool try_e_first = sph->count == 0
+        && ed_ns_rs_wants_e(base, bn, base_has_stress_override);
+    if (try_e_first) { stem_phonemes_with_e(p, base, bn, sph); }
     if (sph->count == 0) { get_stem_phonemes(p, base, bn, sph); }
     if (sph->count == 0 && base_has_double && !prefer_undoubled) {
         get_stem_phonemes(p, base, bn - 1, sph);
     }
-    if (sph->count == 0 && bn > 0
-        && !is_vowel_letter(base[bn - 1])
-        && has_any_vowel_letter(base, bn)) {
-        struct chars sx = {0};
-        chars_put(&sx, base, bn);
-        chars_put_byte(&sx, 'e');
-        get_stem_phonemes(p, sx.data, sx.count, sph);
-        chars_free(&sx);
+    ed_consonant_final_magic_e(p, base, bn, sph);
+}
+
+static bool stem_in_dicts(struct phonemizer * p, const char * base,
+                          size_t bn) {
+    return smap_get(&p->dict, base, bn) != NULL
+        || smap_get(&p->verb_dict, base, bn) != NULL;
+}
+
+// Soft c/g before "-ed" needs a dictionary entry to count as a regular
+// suffix; "-nged" is exempt.
+
+static bool ed_soft_c_g_blocked(struct phonemizer * p,
+                                const char * norm, size_t nn,
+                                const char * base, size_t bn) {
+    bool blocked = false;
+    if (nn >= 4) {
+        char penult = norm[nn - 3];
+        bool is_soft_c = penult == 'c' || penult == 'g';
+        bool is_ng_ged = penult == 'g' && nn >= 6
+            && norm[nn - 4] == 'n';
+        blocked = is_soft_c && !is_ng_ged
+            && !stem_in_dicts(p, base, bn);
     }
+    return blocked;
+}
+
+static bool ed_ending_needs_dict(struct phonemizer * p,
+                                 const char * norm, size_t nn,
+                                 const char * base, size_t bn,
+                                 const char * ending) {
+    return nn >= 5 && memcmp(norm + nn - 4, ending, 4) == 0
+        && !stem_in_dicts(p, base, bn);
+}
+
+// "-mented" on an unstressed consonant-final stem is a morpheme, not a
+// regular -ed.
+
+static bool ed_mented_blocked(struct phonemizer * p,
+                              const char * norm, size_t nn) {
+    bool blocked = false;
+    if (nn >= 7 && memcmp(norm + nn - 6, "mented", 6) == 0) {
+        char before_m = norm[nn - 7];
+        bool stem_has_stress = imap_get(&p->stress_pos,
+                                        norm, nn - 2) != NULL;
+        blocked = !is_vowel_letter(before_m) && !stem_has_stress;
+    }
+    return blocked;
+}
+
+static int32_t trailing_consonants(const char * base, size_t bn) {
+    int32_t trail_cons = 0;
+    int32_t bi = (int32_t)bn - 1;
+    while (bi >= 0 && !is_vowel_letter(base[bi])) {
+        trail_cons++;
+        bi--;
+    }
+    return trail_cons;
 }
 
 // -ed candidate pre-flight: bundles 7 skip checks. Returns false
@@ -6450,56 +7344,18 @@ static void try_ed_non_magic_e_stem_fallbacks(
 // (silent-e stem, 'u'-ending stem, soft-c/g without dict entry,
 // "nged"/"eted" without dict, "mented" without prefix or stress,
 // or 3+ trailing consonants on the base).
+
 static bool is_ed_suffix_candidate(struct phonemizer * p,
                                    const char * norm, size_t nn,
                                    const char * base, size_t bn) {
-    bool processing = true;
-    if (bn > 0 && base[bn - 1] == 'e') { processing = false; }
-    if (processing && bn > 0 && base[bn - 1] == 'u') {
-        processing = false;
-    }
-    if (processing && nn >= 4) {
-        char penult = norm[nn - 3];
-        bool is_soft_c = (penult == 'c' || penult == 'g');
-        bool is_ng_ged = (penult == 'g' && nn >= 6
-                          && norm[nn - 4] == 'n');
-        if (is_soft_c && !is_ng_ged
-            && smap_get(&p->dict, base, bn) == NULL
-            && smap_get(&p->verb_dict, base, bn) == NULL) {
-            processing = false;
-        }
-    }
-    if (processing && nn >= 5
-        && memcmp(norm + nn - 4, "nged", 4) == 0
-        && smap_get(&p->dict, base, bn) == NULL
-        && smap_get(&p->verb_dict, base, bn) == NULL) {
-        processing = false;
-    }
-    if (processing && nn >= 5
-        && memcmp(norm + nn - 4, "eted", 4) == 0
-        && smap_get(&p->dict, base, bn) == NULL
-        && smap_get(&p->verb_dict, base, bn) == NULL) {
-        processing = false;
-    }
-    if (processing && nn >= 7
-        && memcmp(norm + nn - 6, "mented", 6) == 0) {
-        char before_m = norm[nn - 7];
-        bool stem_has_stress = imap_get(&p->stress_pos,
-                                        norm, nn - 2) != NULL;
-        if (!is_vowel_letter(before_m) && !stem_has_stress) {
-            processing = false;
-        }
-    }
-    if (processing) {
-        int trail_cons = 0;
-        int bi = (int)bn - 1;
-        while (bi >= 0 && !is_vowel_letter(base[bi])) {
-            trail_cons++;
-            bi--;
-        }
-        if (trail_cons >= 3) { processing = false; }
-    }
-    return processing;
+    bool blocked = (bn > 0 && base[bn - 1] == 'e')
+        || (bn > 0 && base[bn - 1] == 'u')
+        || ed_soft_c_g_blocked(p, norm, nn, base, bn)
+        || ed_ending_needs_dict(p, norm, nn, base, bn, "nged")
+        || ed_ending_needs_dict(p, norm, nn, base, bn, "eted")
+        || ed_mented_blocked(p, norm, nn)
+        || trailing_consonants(base, bn) >= 3;
+    return !blocked;
 }
 
 // -ed allomorph voicing: t/d -> I#d (ɪd, syllabic), unvoiced ->
@@ -6531,12 +7387,12 @@ static void compute_ed_suffix_voicing(struct phonemizer * p,
         struct chars fw_ph = {0};
         apply_rules(p, norm, nn, false, -1, false, false,
                     fw_re, nn, fw_pv, nn, &fw_ph);
-        int e_pos = (int)nn - 2;
+        int32_t e_pos = (int32_t)nn - 2;
         bool e_was_visited = (e_pos >= 0
                               && (size_t)e_pos < nn
                               && fw_pv[e_pos]);
         char fw_last = 0;
-        for (int ri = (int)fw_ph.count - 1;
+        for (int32_t ri = (int32_t)fw_ph.count - 1;
              ri >= 0 && fw_last == 0; ri--) {
             if (fw_ph.data[ri] != '\x01') {
                 fw_last = fw_ph.data[ri];
@@ -6558,7 +7414,7 @@ static void compute_ed_suffix_voicing(struct phonemizer * p,
 static bool prefix_match_in_group(const struct ruleset * rs,
                                   const char * key, size_t kn,
                                   const char * w, size_t wn,
-                                  int glen) {
+                                  int32_t glen) {
     bool matched = false;
     struct chars view = chars_view(key, kn);
     struct rules * rv = map_get((struct map *)&rs->rule_groups,
@@ -6568,11 +7424,11 @@ static bool prefix_match_in_group(const struct ruleset * rs,
             const struct phoneme_rule * rule = &rv->data[i];
             if (rule->is_prefix) {
                 struct chars ph = {0};
-                int adv = 0, dfs = -1, dfc = 0;
-                int sc = match_rule(rs, rule, w, wn, 0, &ph, &adv,
+                int32_t adv = 0, dfs = -1, dfc = 0;
+                int32_t sc = match_rule(rs, rule, w, wn, 0, &ph, &adv,
                                     &dfs, &dfc, glen, "", 0, 0,
                                     NULL, 0, false);
-                matched = (sc >= 0 && adv > 0 && adv < (int)wn);
+                matched = (sc >= 0 && adv > 0 && adv < (int32_t)wn);
                 chars_free(&ph);
             }
         }
@@ -6607,6 +7463,42 @@ static bool has_prefix_at_start(struct phonemizer * p,
 // 'g'/'c' (soft-g/-c via magic-e). Suppress CVC for -en/-an/-in/
 // -on/-un when phonemized base ends in syllabic n, for -el, -w,
 // and -er endings (rhotic schwa or semi-vowel, not magic-e).
+// A stem whose phonemes end in schwa+n or a syllabic n is not a
+// doubling CVC even though its spelling looks like one.
+
+static bool stem_ends_in_nasal_syllable(struct phonemizer * p,
+                                        const char * base, size_t bn) {
+    struct chars base_ph = {0};
+    get_stem_phonemes(p, base, bn, &base_ph);
+    bool nasal = false;
+    if (base_ph.count >= 2) {
+        char last2 = base_ph.data[base_ph.count - 1];
+        char last1 = base_ph.data[base_ph.count - 2];
+        bool ends_in_schwa_n = last1 == '@'
+            && (last2 == 'n' || last2 == 'N');
+        bool ends_in_syllabic_n = last1 == 'n' && last2 == '-';
+        nasal = ends_in_schwa_n || ends_in_syllabic_n;
+    }
+    chars_free(&base_ph);
+    return nasal;
+}
+
+// "-rg" / "-rc" after a vowel doubles like a CVC stem.
+
+static bool is_cvrc_stem(const char * base, size_t bn) {
+    return bn >= 3 && (base[bn - 1] == 'g' || base[bn - 1] == 'c')
+        && base[bn - 2] == 'r' && is_vowel_letter(base[bn - 3]);
+}
+
+// "-le", "-w" and "-er" stems never double.
+
+static bool blocks_cvc(const char * base, size_t bn) {
+    return (bn >= 2 && base[bn - 1] == 'l' && base[bn - 2] == 'e')
+        || (bn > 0 && base[bn - 1] == 'w')
+        || (bn >= 2 && base[bn - 1] == 'r'
+            && tolower((unsigned char)base[bn - 2]) == 'e');
+}
+
 static void detect_stem_pattern_for_suffix(struct phonemizer * p,
                                            const char * base,
                                            size_t bn,
@@ -6615,45 +7507,125 @@ static void detect_stem_pattern_for_suffix(struct phonemizer * p,
                                            bool * out_nc) {
     bool cvc = bn >= 2 && !is_vowel_letter(base[bn - 1])
                && is_vowel_letter(base[bn - 2]);
-    if (include_cvrc && !cvc && bn >= 3
-        && (base[bn - 1] == 'g' || base[bn - 1] == 'c')
-        && base[bn - 2] == 'r'
-        && is_vowel_letter(base[bn - 3])) {
+    if (include_cvrc && !cvc && is_cvrc_stem(base, bn)) {
         cvc = true;
     }
-    if (cvc && bn >= 2 && base[bn - 1] == 'n') {
-        char prev_vowel = base[bn - 2];
-        if (prev_vowel == 'e' || prev_vowel == 'a'
-            || prev_vowel == 'i' || prev_vowel == 'o'
-            || prev_vowel == 'u') {
-            struct chars base_ph = {0};
-            get_stem_phonemes(p, base, bn, &base_ph);
-            if (base_ph.count >= 2) {
-                char last2 = base_ph.data[base_ph.count - 1];
-                char last1 = base_ph.data[base_ph.count - 2];
-                bool ends_in_schwa_n = (last1 == '@'
-                    && (last2 == 'n' || last2 == 'N'));
-                bool ends_in_syllabic_n = (last1 == 'n'
-                                           && last2 == '-');
-                if (ends_in_schwa_n || ends_in_syllabic_n) {
-                    cvc = false;
-                }
+    if (cvc && bn >= 2 && base[bn - 1] == 'n'
+        && is_plain_vowel(base[bn - 2])
+        && stem_ends_in_nasal_syllable(p, base, bn)) {
+        cvc = false;
+    }
+    if (cvc && blocks_cvc(base, bn)) { cvc = false; }
+    *out_cvc = cvc;
+    *out_nc = bn >= 2 && base[bn - 1] == 'c' && base[bn - 2] == 'n';
+}
+
+// A stem carries its own stress when the stress table or a
+// dictionary pins it. The "only" sets mark dictionary entries that
+// do not count as such a pin.
+
+static bool stem_has_stress_override(struct phonemizer * p,
+                                     const char * base, size_t bn) {
+    return imap_get(&p->stress_pos, base, bn) != NULL
+        || (smap_get(&p->dict, base, bn) != NULL
+            && !set_has(&p->onlys_words, base, bn)
+            && !set_has(&p->only_words, base, bn))
+        || smap_get(&p->verb_dict, base, bn) != NULL;
+}
+
+// A "-ng" base no dictionary knows is a word like "thing", not an
+// -ing form.
+
+static bool ing_base_is_ng_nonword(struct phonemizer * p,
+                                   const char * base, size_t bn) {
+    return bn >= 2 && memcmp(base + bn - 2, "ng", 2) == 0
+        && smap_get(&p->dict, base, bn) == NULL
+        && smap_get(&p->verb_dict, base, bn) == NULL;
+}
+
+// $strend stems take their phonemes from the rule engine rather than
+// from the dictionaries.
+
+static void ing_strend_stem_phonemes(struct phonemizer * p,
+                                     const char * mw, size_t mn,
+                                     struct chars * sph) {
+    if (set_has(&p->strend_words, mw, mn)) {
+        struct chars rules_ph = {0};
+        apply_rules(p, mw, mn, true, -1, false, false,
+                    NULL, 0, NULL, 0, &rules_ph);
+        if (rules_ph.count > 0) {
+            process_phoneme_string(rules_ph.data, rules_ph.count,
+                                   false, sph);
+        }
+        chars_free(&rules_ph);
+    }
+}
+
+static void ing_magic_e_stem(struct phonemizer * p,
+                             const char * base, size_t bn,
+                             bool cvc_pattern, bool nc_pattern,
+                             struct chars * sph) {
+    struct chars magic_e_ing = {0};
+    chars_put(&magic_e_ing, base, bn);
+    chars_put_byte(&magic_e_ing, 'e');
+    bool use_magic_e = true;
+    struct chars base_only_ph = {0};
+    if (cvc_pattern && !nc_pattern) {
+        get_stem_phonemes(p, base, bn, &base_only_ph);
+        use_magic_e = should_use_magic_e_for_cvc_stem(
+            base_only_ph.data, base_only_ph.count, "I@", 2);
+    }
+    if (use_magic_e) {
+        ing_strend_stem_phonemes(p, magic_e_ing.data,
+                                 magic_e_ing.count, sph);
+        if (sph->count == 0) {
+            get_stem_phonemes(p, magic_e_ing.data,
+                              magic_e_ing.count, sph);
+        }
+        if (sph->count == 0) {
+            if (base_only_ph.count > 0) {
+                chars_put(sph, base_only_ph.data,
+                          base_only_ph.count);
+            } else {
+                get_stem_phonemes(p, base, bn, sph);
             }
-            chars_free(&base_ph);
         }
     }
-    bool nc = bn >= 2 && base[bn - 1] == 'c' && base[bn - 2] == 'n';
-    if (cvc && bn >= 2 && base[bn - 1] == 'l'
-        && base[bn - 2] == 'e') {
-        cvc = false;
+    chars_free(&base_only_ph);
+    chars_free(&magic_e_ing);
+}
+
+// Last resorts for a stem nothing else phonemized: undo a doubled
+// final consonant, then undo a 'y' that became an 'i'.
+
+static void ing_stem_spelling_fallbacks(struct phonemizer * p,
+                                        const char * base, size_t bn,
+                                        struct chars * sph) {
+    if (sph->count == 0 && bn >= 2 && base[bn - 1] == base[bn - 2]) {
+        get_stem_phonemes(p, base, bn - 1, sph);
     }
-    if (cvc && bn > 0 && base[bn - 1] == 'w') { cvc = false; }
-    if (cvc && bn >= 2 && base[bn - 1] == 'r'
-        && tolower((unsigned char)base[bn - 2]) == 'e') {
-        cvc = false;
+    if (sph->count == 0 && bn > 0 && base[bn - 1] == 'i') {
+        struct chars sx = {0};
+        chars_put(&sx, base, bn - 1);
+        chars_put_byte(&sx, 'y');
+        get_stem_phonemes(p, sx.data, sx.count, sph);
+        chars_free(&sx);
     }
-    *out_cvc = cvc;
-    *out_nc = nc;
+}
+
+// Either spelling of the stem may carry the $strend flag.
+
+static bool ing_stem_is_strend(struct phonemizer * p,
+                               const char * base, size_t bn) {
+    bool strend = set_has(&p->strend_words, base, bn);
+    if (!strend) {
+        struct chars sx = {0};
+        chars_put(&sx, base, bn);
+        chars_put_byte(&sx, 'e');
+        strend = set_has(&p->strend_words, sx.data, sx.count);
+        chars_free(&sx);
+    }
+    return strend;
 }
 
 // -ing suffix handler. Strips "ing", phonemizes the stem (with
@@ -6668,101 +7640,107 @@ static void check_suffix_ing(struct phonemizer * p,
         const char * base = norm;
         size_t bn = nn - 3;
         struct chars sph = {0};
-        bool processing = true;
-        if (bn >= 2 && memcmp(base + bn - 2, "ng", 2) == 0
-            && smap_get(&p->dict, base, bn) == NULL
-            && smap_get(&p->verb_dict, base, bn) == NULL) {
-            processing = false;
-        }
-        if (processing) {
+        if (!ing_base_is_ng_nonword(p, base, bn)) {
             bool cvc_pattern = false;
             bool nc_pattern = false;
             detect_stem_pattern_for_suffix(p, base, bn, true,
                                            &cvc_pattern,
                                            &nc_pattern);
-            bool base_has_stress_override =
-                imap_get(&p->stress_pos, base, bn) != NULL
-                || (smap_get(&p->dict, base, bn) != NULL
-                    && !set_has(&p->onlys_words, base, bn)
-                    && !set_has(&p->only_words, base, bn))
-                || smap_get(&p->verb_dict, base, bn) != NULL;
-            if ((cvc_pattern || nc_pattern)
-                && !base_has_stress_override) {
-                struct chars magic_e_ing = {0};
-                chars_put(&magic_e_ing, base, bn);
-                chars_put_byte(&magic_e_ing, 'e');
-                bool use_magic_e = true;
-                struct chars base_only_ph = {0};
-                if (cvc_pattern && !nc_pattern) {
-                    get_stem_phonemes(p, base, bn, &base_only_ph);
-                    use_magic_e = should_use_magic_e_for_cvc_stem(
-                        base_only_ph.data, base_only_ph.count,
-                        "I@", 2);
-                }
-                if (use_magic_e) {
-                    if (set_has(&p->strend_words,
-                                magic_e_ing.data,
-                                magic_e_ing.count)) {
-                        struct chars rules_ph = {0};
-                        apply_rules(p, magic_e_ing.data,
-                                    magic_e_ing.count, true, -1,
-                                    false, false,
-                                    NULL, 0, NULL, 0, &rules_ph);
-                        if (rules_ph.count > 0) {
-                            process_phoneme_string(rules_ph.data,
-                                rules_ph.count, false, &sph);
-                        }
-                        chars_free(&rules_ph);
-                    }
-                    if (sph.count == 0) {
-                        get_stem_phonemes(p, magic_e_ing.data,
-                                          magic_e_ing.count, &sph);
-                    }
-                    if (sph.count == 0) {
-                        if (base_only_ph.count > 0) {
-                            chars_put(&sph, base_only_ph.data,
-                                      base_only_ph.count);
-                        } else {
-                            get_stem_phonemes(p, base, bn, &sph);
-                        }
-                    }
-                }
-                chars_free(&base_only_ph);
-                chars_free(&magic_e_ing);
+            bool has_override = stem_has_stress_override(p, base, bn);
+            if ((cvc_pattern || nc_pattern) && !has_override) {
+                ing_magic_e_stem(p, base, bn, cvc_pattern,
+                                 nc_pattern, &sph);
             } else {
                 try_ing_non_magic_e_stem_fallbacks(p, base, bn,
-                    base_has_stress_override, &sph);
+                    has_override, &sph);
             }
-            if (sph.count == 0 && bn >= 2
-                && base[bn - 1] == base[bn - 2]) {
-                get_stem_phonemes(p, base, bn - 1, &sph);
-            }
-            if (sph.count == 0 && bn > 0 && base[bn - 1] == 'i') {
-                struct chars sx = {0};
-                chars_put(&sx, base, bn - 1);
-                chars_put_byte(&sx, 'y');
-                get_stem_phonemes(p, sx.data, sx.count, &sph);
-                chars_free(&sx);
-            }
+            ing_stem_spelling_fallbacks(p, base, bn, &sph);
         }
         if (sph.count > 0) {
             simplify_syllabic_l_for_ing(base, bn, &sph);
-            bool stem_is_strend = set_has(&p->strend_words,
-                                          base, bn);
-            if (!stem_is_strend) {
-                struct chars sx = {0};
-                chars_put(&sx, base, bn);
-                chars_put_byte(&sx, 'e');
-                stem_is_strend = set_has(&p->strend_words,
-                                         sx.data, sx.count);
-                chars_free(&sx);
-            }
+            bool stem_is_strend = ing_stem_is_strend(p, base, bn);
             chars_put(&sph, "%IN", 3);
             process_phoneme_string(sph.data, sph.count,
                                    stem_is_strend, out);
         }
         chars_free(&sph);
     }
+}
+
+// An 'i' at the end of the stem stands for the 'y' the suffix
+// replaced.
+
+static void ed_y_stem_phonemes(struct phonemizer * p,
+                               const char * base, size_t bn,
+                               struct chars * sph) {
+    if (bn > 0 && base[bn - 1] == 'i' && bn >= 2) {
+        struct chars sx = {0};
+        chars_put(&sx, base, bn - 1);
+        chars_put_byte(&sx, 'y');
+        get_stem_phonemes(p, sx.data, sx.count, sph);
+        chars_free(&sx);
+    }
+}
+
+// Returns true when the magic-e spelling starts with a compound
+// prefix, which means the word is not an -ed form at all
+// ("infrared" is not "infrare" + d).
+
+static bool ed_magic_e_stem(struct phonemizer * p,
+                            const char * base, size_t bn,
+                            bool cvc_pattern, bool nc_pattern,
+                            struct chars * sph) {
+    struct chars magic_e = {0};
+    chars_put(&magic_e, base, bn);
+    chars_put_byte(&magic_e, 'e');
+    bool blocked = has_prefix_at_start(p, magic_e.data,
+                                       magic_e.count);
+    if (!blocked) {
+        bool use_magic_e_ed = true;
+        if (cvc_pattern && !nc_pattern) {
+            struct chars base_ph_ed = {0};
+            get_stem_phonemes(p, base, bn, &base_ph_ed);
+            use_magic_e_ed = should_use_magic_e_for_cvc_stem(
+                base_ph_ed.data, base_ph_ed.count, "I@3", 3);
+            chars_free(&base_ph_ed);
+        }
+        if (use_magic_e_ed) {
+            if (sph->count == 0) {
+                get_stem_phonemes(p, magic_e.data, magic_e.count,
+                                  sph);
+            }
+            if (sph->count == 0) {
+                get_stem_phonemes(p, base, bn, sph);
+            }
+        }
+    }
+    chars_free(&magic_e);
+    return blocked;
+}
+
+// Undo a doubled final consonant, then fall back to the stem as it
+// stands.
+
+static void ed_doubled_consonant_stem(struct phonemizer * p,
+                                      const char * base, size_t bn,
+                                      struct chars * sph) {
+    if (sph->count == 0 && bn >= 2 && base[bn - 1] == base[bn - 2]) {
+        get_stem_phonemes(p, base, bn - 1, sph);
+        if (sph->count == 0) {
+            get_stem_phonemes(p, base, bn, sph);
+        }
+    }
+}
+
+static void emit_ed_phonemes(struct phonemizer * p,
+                             const struct chars * sph,
+                             const char * norm, size_t nn,
+                             struct chars * out) {
+    struct chars final_ph = {0};
+    compute_ed_suffix_voicing(p, sph->data, sph->count, norm, nn,
+                              &final_ph);
+    process_phoneme_string(final_ph.data, final_ph.count, false, out);
+    chars_free(&final_ph);
 }
 
 // -ed suffix handler. Strips "ed", phonemizes the stem (with same
@@ -6786,66 +7764,20 @@ static void check_suffix_ed(struct phonemizer * p,
         bool nc_pattern = false;
         detect_stem_pattern_for_suffix(p, base, bn, false,
                                        &cvc_pattern, &nc_pattern);
-        bool base_has_stress_override2 =
-            imap_get(&p->stress_pos, base, bn) != NULL
-            || (smap_get(&p->dict, base, bn) != NULL
-                && !set_has(&p->onlys_words, base, bn)
-                && !set_has(&p->only_words, base, bn))
-            || smap_get(&p->verb_dict, base, bn) != NULL;
-        if (bn > 0 && base[bn - 1] == 'i' && bn >= 2) {
-            struct chars sx = {0};
-            chars_put(&sx, base, bn - 1);
-            chars_put_byte(&sx, 'y');
-            get_stem_phonemes(p, sx.data, sx.count, &sph);
-            chars_free(&sx);
-        }
-        if ((cvc_pattern || nc_pattern)
-            && !base_has_stress_override2) {
-            struct chars magic_e = {0};
-            chars_put(&magic_e, base, bn);
-            chars_put_byte(&magic_e, 'e');
-            if (has_prefix_at_start(p, magic_e.data,
-                                    magic_e.count)) {
-                processing = false;
-            } else {
-                bool use_magic_e_ed = true;
-                if (cvc_pattern && !nc_pattern) {
-                    struct chars base_ph_ed = {0};
-                    get_stem_phonemes(p, base, bn, &base_ph_ed);
-                    use_magic_e_ed = should_use_magic_e_for_cvc_stem(
-                        base_ph_ed.data, base_ph_ed.count,
-                        "I@3", 3);
-                    chars_free(&base_ph_ed);
-                }
-                if (use_magic_e_ed) {
-                    if (sph.count == 0) {
-                        get_stem_phonemes(p, magic_e.data,
-                                          magic_e.count, &sph);
-                    }
-                    if (sph.count == 0) {
-                        get_stem_phonemes(p, base, bn, &sph);
-                    }
-                }
-            }
-            chars_free(&magic_e);
+        bool has_override = stem_has_stress_override(p, base, bn);
+        ed_y_stem_phonemes(p, base, bn, &sph);
+        if ((cvc_pattern || nc_pattern) && !has_override) {
+            processing = !ed_magic_e_stem(p, base, bn, cvc_pattern,
+                                          nc_pattern, &sph);
         } else {
             try_ed_non_magic_e_stem_fallbacks(p, base, bn,
-                base_has_stress_override2, &sph);
+                has_override, &sph);
         }
-        if (processing && sph.count == 0 && bn >= 2
-            && base[bn - 1] == base[bn - 2]) {
-            get_stem_phonemes(p, base, bn - 1, &sph);
-            if (sph.count == 0) {
-                get_stem_phonemes(p, base, bn, &sph);
-            }
+        if (processing) {
+            ed_doubled_consonant_stem(p, base, bn, &sph);
         }
         if (processing && sph.count > 0) {
-            struct chars final_ph = {0};
-            compute_ed_suffix_voicing(p, sph.data, sph.count,
-                                      norm, nn, &final_ph);
-            process_phoneme_string(final_ph.data, final_ph.count,
-                                   false, out);
-            chars_free(&final_ph);
+            emit_ed_phonemes(p, &sph, norm, nn, out);
         }
         chars_free(&sph);
     }
@@ -6878,7 +7810,7 @@ static void do_stem_ph_s(struct phonemizer * p,
                 process_phoneme_string(jt->data, jt->count, false,
                                        &ph2);
             } else {
-                int * sp = imap_get(&p->stress_pos, stem, sn);
+                int32_t * sp = imap_get(&p->stress_pos, stem, sn);
                 if (sp != NULL) {
                     struct chars raw = {0};
                     apply_rules(p, stem, sn, true, 0, false, false,
@@ -6957,6 +7889,40 @@ static void check_suffix_dict_s(struct phonemizer * p,
     }
 }
 
+static const char VOWELS_IES[] = "aAeEIiOUVu03@o";
+
+static int32_t first_ies_vowel_pos(const struct chars * s) {
+    int32_t at = -1;
+    for (size_t k = 0; k < s->count && at < 0; k++) {
+        if (strchr(VOWELS_IES, s->data[k]) != NULL) { at = (int32_t)k; }
+    }
+    return at;
+}
+
+// The whole word through the rules wins when its first vowel
+// disagrees with the stem's ("species", not "specy" + z).
+
+static bool ies_direct_rules_override(struct phonemizer * p,
+                                      const char * norm, size_t nn,
+                                      char sv, struct chars * out) {
+    struct chars full_raw = {0};
+    apply_rules(p, norm, nn, false, 0, false, false,
+                NULL, 0, NULL, 0, &full_raw);
+    int32_t dv_pos = first_ies_vowel_pos(&full_raw);
+    char dv = (dv_pos >= 0) ? full_raw.data[dv_pos] : 0;
+    bool direct_fv_unstressed = dv_pos > 0
+        && full_raw.data[dv_pos - 1] == '%';
+    bool magic_e_strut = sv == 'V' && (dv == 'u' || dv == 'U');
+    bool emitted = dv != 0 && sv != dv && !direct_fv_unstressed
+        && !magic_e_strut;
+    if (emitted) {
+        process_phoneme_string(full_raw.data, full_raw.count, false,
+                               out);
+    }
+    chars_free(&full_raw);
+    return emitted;
+}
+
 // -ies plural/3rd-person handler. Strip "ies", restore "y",
 // phonemize the stem, append voiced 'z'. The direct-rules override
 // fires when a stem-vs-fullword vowel disagrees (e.g. "species").
@@ -6971,44 +7937,14 @@ static void check_suffix_ies(struct phonemizer * p,
         struct chars sph = {0};
         get_stem_phonemes(p, base.data, base.count, &sph);
         if (sph.count > 0) {
-            static const char VOWELS_IES[] = "aAeEIiOUVu03@o";
-            int sv_pos = -1;
-            for (size_t k = 0; k < sph.count && sv_pos < 0; k++) {
-                if (strchr(VOWELS_IES, sph.data[k]) != NULL) {
-                    sv_pos = (int)k;
-                }
-            }
-            bool stem_has_diphthong = (sv_pos >= 0
-                && sv_pos + 1 < (int)sph.count
+            int32_t sv_pos = first_ies_vowel_pos(&sph);
+            bool stem_has_diphthong = sv_pos >= 0
+                && sv_pos + 1 < (int32_t)sph.count
                 && (sph.data[sv_pos + 1] == 'I'
-                    || sph.data[sv_pos + 1] == 'U'));
-            bool emitted_direct = false;
-            if (!stem_has_diphthong) {
-                char sv = (sv_pos >= 0) ? sph.data[sv_pos] : 0;
-                struct chars full_raw = {0};
-                apply_rules(p, norm, nn, false, 0, false, false,
-                            NULL, 0, NULL, 0, &full_raw);
-                int dv_pos = -1;
-                for (size_t k = 0;
-                     k < full_raw.count && dv_pos < 0; k++) {
-                    if (strchr(VOWELS_IES,
-                               full_raw.data[k]) != NULL) {
-                        dv_pos = (int)k;
-                    }
-                }
-                char dv = (dv_pos >= 0) ? full_raw.data[dv_pos] : 0;
-                bool direct_fv_unstressed = (dv_pos > 0
-                    && full_raw.data[dv_pos - 1] == '%');
-                bool magic_e_strut = (sv == 'V'
-                    && (dv == 'u' || dv == 'U'));
-                if (dv != 0 && sv != dv && !direct_fv_unstressed
-                    && !magic_e_strut) {
-                    process_phoneme_string(full_raw.data,
-                        full_raw.count, false, out);
-                    emitted_direct = true;
-                }
-                chars_free(&full_raw);
-            }
+                    || sph.data[sv_pos + 1] == 'U');
+            char sv = (sv_pos >= 0) ? sph.data[sv_pos] : 0;
+            bool emitted_direct = !stem_has_diphthong
+                && ies_direct_rules_override(p, norm, nn, sv, out);
             if (!emitted_direct) {
                 chars_put(&sph, "z", 1);
                 process_phoneme_string(sph.data, sph.count, false,
@@ -7020,6 +7956,90 @@ static void check_suffix_ies(struct phonemizer * p,
     }
 }
 
+// A stress-table entry re-places the primary on already-built
+// phonemes.
+
+static void apply_stress_pos_if_set(struct phonemizer * p,
+                                    const char * base, size_t bn,
+                                    struct chars * ph) {
+    int32_t * sp = imap_get(&p->stress_pos, base, bn);
+    if (sp != NULL) {
+        struct chars stressed = {0};
+        apply_stress_position(ph->data, ph->count, *sp, &stressed);
+        ph->count = 0;
+        chars_put(ph, stressed.data, stressed.count);
+        chars_free(&stressed);
+    }
+}
+
+// Consonant + 'e', where the consonant is neither a sibilant nor the
+// second half of a "ch" / "sh" digraph.
+
+static bool magic_es_base_is_candidate(const char * base, size_t bn) {
+    char c_before_e = base[bn - 2];
+    bool is_sibilant = c_before_e == 's' || c_before_e == 'z'
+        || c_before_e == 'x' || c_before_e == 'c';
+    bool is_digraph_sibilant = c_before_e == 'h' && bn >= 3
+        && (base[bn - 3] == 'c' || base[bn - 3] == 's');
+    return bn >= 2 && base[bn - 1] == 'e'
+        && !is_vowel_letter(c_before_e)
+        && !is_sibilant && !is_digraph_sibilant;
+}
+
+// A group-B consonant after a, i, o or y takes the suffix-phoneme-
+// only path through the rules.
+
+static bool magic_es_wants_suffix_phoneme_only(const char * base,
+                                               size_t bn) {
+    static const char GROUP_B_CHARS[] = "bcdfgjklmnpqstvxz";
+    static const char DELFWD_VOWELS[] = "aioy";
+    bool use_spo = false;
+    if (bn >= 3 && base[bn - 1] == 'e') {
+        char c_cons = (char)tolower((unsigned char)base[bn - 2]);
+        char c_prev = (char)tolower((unsigned char)base[bn - 3]);
+        use_spo = strchr(GROUP_B_CHARS, c_cons) != NULL
+            && strchr(DELFWD_VOWELS, c_prev) != NULL;
+    }
+    return use_spo;
+}
+
+// A dictionary stem keeps its own phonemes; anything else goes
+// through the rule engine.
+
+static void magic_es_stem_phonemes(struct phonemizer * p,
+                                   const char * base, size_t bn,
+                                   struct chars * ph2) {
+    struct chars * jt = smap_get(&p->dict, base, bn);
+    if (jt != NULL) {
+        chars_put(ph2, jt->data, jt->count);
+        apply_stress_pos_if_set(p, base, bn, ph2);
+    } else {
+        bool use_spo = magic_es_wants_suffix_phoneme_only(base, bn);
+        struct chars raw = {0};
+        apply_rules(p, base, bn, true, -1, use_spo, false,
+                    NULL, 0, NULL, 0, &raw);
+        apply_stress_pos_if_set(p, base, bn, &raw);
+        process_phoneme_string(raw.data, raw.count, false, ph2);
+        chars_free(&raw);
+    }
+}
+
+// The plural allomorph: /I#z/ after a sibilant, /s/ after an
+// unvoiced consonant, /z/ otherwise.
+
+static void append_s_allomorph(struct chars * sph) {
+    static const char UNVOICED[] = "ptkfTSCxXhs";
+    static const char SIBILANTS_PH[] = "SZsz";
+    char last = sph->data[sph->count - 1];
+    bool last_sib = strchr(SIBILANTS_PH, last) != NULL;
+    const char * s_ph;
+    size_t s_n;
+    if (last_sib) { s_ph = "I#z"; s_n = 3; }
+    else if (strchr(UNVOICED, last) != NULL) { s_ph = "s"; s_n = 1; }
+    else { s_ph = "z"; s_n = 1; }
+    chars_put(sph, s_ph, s_n);
+}
+
 // -[Ce]s magic-e suffix. Strip 's', then check that the base ends
 // in consonant+e where the consonant is not a sibilant. Voicing
 // matches plural/3rd-person allomorphs.
@@ -7027,100 +8047,26 @@ static void check_suffix_magic_es(struct phonemizer * p,
                                   const char * norm, size_t nn,
                                   struct chars * out) {
     out->count = 0;
-    if (nn >= 4 && norm[nn - 1] == 's'
-        && !(nn >= 2 && norm[nn - 2] == 's')) {
+    bool es_shape = nn >= 4 && norm[nn - 1] == 's'
+        && !(nn >= 2 && norm[nn - 2] == 's');
+    if (es_shape && magic_es_base_is_candidate(norm, nn - 1)) {
         size_t bn = nn - 1;
         const char * base = norm;
-        if (bn >= 2 && base[bn - 1] == 'e') {
-            char c_before_e = base[bn - 2];
-            bool is_consonant = !is_vowel_letter(c_before_e);
-            bool is_sibilant = (c_before_e == 's'
-                || c_before_e == 'z' || c_before_e == 'x'
-                || c_before_e == 'c');
-            bool is_digraph_sibilant = (c_before_e == 'h'
-                && bn >= 3 && (base[bn - 3] == 'c'
-                               || base[bn - 3] == 's'));
-            if (is_consonant && !is_sibilant
-                && !is_digraph_sibilant) {
-                struct chars sph = {0};
-                if (has_any_vowel_letter(base, bn)) {
-                    struct chars ph2 = {0};
-                    struct chars * jt = smap_get(&p->dict,
-                                                 base, bn);
-                    if (jt != NULL) {
-                        chars_put(&ph2, jt->data, jt->count);
-                        int * sp = imap_get(&p->stress_pos,
-                                            base, bn);
-                        if (sp != NULL) {
-                            struct chars stressed = {0};
-                            apply_stress_position(ph2.data,
-                                ph2.count, *sp, &stressed);
-                            ph2.count = 0;
-                            chars_put(&ph2, stressed.data,
-                                      stressed.count);
-                            chars_free(&stressed);
-                        }
-                    } else {
-                        static const char GROUP_B_CHARS[] =
-                            "bcdfgjklmnpqstvxz";
-                        static const char DELFWD_VOWELS[] = "aioy";
-                        bool use_spo = false;
-                        if (bn >= 3 && base[bn - 1] == 'e') {
-                            char c_cons = (char)tolower(
-                                (unsigned char)base[bn - 2]);
-                            char c_prev = (char)tolower(
-                                (unsigned char)base[bn - 3]);
-                            use_spo =
-                                strchr(GROUP_B_CHARS,
-                                       c_cons) != NULL
-                                && strchr(DELFWD_VOWELS,
-                                          c_prev) != NULL;
-                        }
-                        struct chars raw = {0};
-                        apply_rules(p, base, bn, true, -1,
-                                    use_spo, false,
-                                    NULL, 0, NULL, 0, &raw);
-                        int * sp = imap_get(&p->stress_pos,
-                                            base, bn);
-                        if (sp != NULL) {
-                            struct chars stressed = {0};
-                            apply_stress_position(raw.data,
-                                raw.count, *sp, &stressed);
-                            raw.count = 0;
-                            chars_put(&raw, stressed.data,
-                                      stressed.count);
-                            chars_free(&stressed);
-                        }
-                        process_phoneme_string(raw.data,
-                            raw.count, false, &ph2);
-                        chars_free(&raw);
-                    }
-                    if (ph2.count > 0
-                        && has_any_vowel_code(ph2.data,
-                                              ph2.count)) {
-                        chars_put(&sph, ph2.data, ph2.count);
-                    }
-                    chars_free(&ph2);
-                }
-                if (sph.count > 0) {
-                    static const char UNVOICED[] = "ptkfTSCxXhs";
-                    static const char SIBILANTS_PH[] = "SZsz";
-                    char last = sph.data[sph.count - 1];
-                    bool last_sib =
-                        strchr(SIBILANTS_PH, last) != NULL;
-                    const char * s_ph;
-                    size_t s_n;
-                    if (last_sib) { s_ph = "I#z"; s_n = 3; }
-                    else if (strchr(UNVOICED, last) != NULL) {
-                        s_ph = "s"; s_n = 1;
-                    } else { s_ph = "z"; s_n = 1; }
-                    chars_put(&sph, s_ph, s_n);
-                    process_phoneme_string(sph.data, sph.count,
-                                           false, out);
-                }
-                chars_free(&sph);
+        struct chars sph = {0};
+        if (has_any_vowel_letter(base, bn)) {
+            struct chars ph2 = {0};
+            magic_es_stem_phonemes(p, base, bn, &ph2);
+            if (ph2.count > 0
+                && has_any_vowel_code(ph2.data, ph2.count)) {
+                chars_put(&sph, ph2.data, ph2.count);
             }
+            chars_free(&ph2);
         }
+        if (sph.count > 0) {
+            append_s_allomorph(&sph);
+            process_phoneme_string(sph.data, sph.count, false, out);
+        }
+        chars_free(&sph);
     }
 }
 
@@ -7311,9 +8257,97 @@ static void word_to_phonemes(struct phonemizer * p,
 // phonemes, with stress demotion when both carry primary stress.
 // ---------------------------------------------------------------------------
 
+// $onlys / noun-form / verb-flag suffixes take the rule path rather
+// than their dictionary entry.
+
+static void prefix_rule_suffix_phonemes(struct phonemizer * p,
+                                        const char * suffix,
+                                        size_t sn,
+                                        struct chars * sfx_ph) {
+    struct chars sfx_lo = {0};
+    to_lower(suffix, sn, &sfx_lo);
+    bool onlys = set_has(&p->onlys_words, suffix, sn);
+    bool noun_form = set_has(&p->noun_form_stress,
+                             sfx_lo.data, sfx_lo.count);
+    bool verb_flag = set_has(&p->verb_flag_words,
+                             sfx_lo.data, sfx_lo.count);
+    if (onlys || noun_form || verb_flag) {
+        struct chars rules_out = {0};
+        apply_rules(p, suffix, sn, true, -1, false, false,
+                    NULL, 0, NULL, 0, &rules_out);
+        process_phoneme_string(rules_out.data, rules_out.count, false,
+                               sfx_ph);
+        chars_free(&rules_out);
+    } else {
+        word_to_phonemes(p, suffix, sn, sfx_ph);
+    }
+    chars_free(&sfx_lo);
+}
+
+// Two primaries cannot stand: a long enough suffix demotes the
+// prefix's, a one-vowel prefix deletes the suffix's, and anything
+// else demotes the suffix's.
+
+static void demote_double_primary(struct chars * phonemes,
+                                  struct chars * sfx_ph,
+                                  const char * suffix, size_t sn) {
+    int32_t sfx_syllables = count_suffix_syllables(suffix, sn);
+    int32_t pfx_vowels = count_prefix_vowels(phonemes->data,
+                                         phonemes->count);
+    bool pfx_ends_schwa = sfx_syllables == 2 && pfx_vowels >= 2
+        && prefix_ends_in_schwa(phonemes->data, phonemes->count);
+    if (sfx_syllables >= 2 && pfx_vowels >= 2 && !pfx_ends_schwa) {
+        char * pp = memchr(phonemes->data, '\'', phonemes->count);
+        if (pp != NULL) { *pp = ','; }
+    } else if (pfx_vowels == 1) {
+        char * sp = memchr(sfx_ph->data, '\'', sfx_ph->count);
+        if (sp != NULL) {
+            chars_erase_at(sfx_ph, (size_t)(sp - sfx_ph->data));
+        }
+    } else {
+        char * sp = memchr(sfx_ph->data, '\'', sfx_ph->count);
+        if (sp != NULL) { *sp = ','; }
+    }
+}
+
+// A secondary that lands immediately before a reduced vowel
+// (@, I#, I2, a#) is dropped.
+
+static void drop_secondary_before_reduced(struct chars * sfx_ph) {
+    char * cp = memchr(sfx_ph->data, ',', sfx_ph->count);
+    if (cp != NULL) {
+        size_t at = (size_t)(cp - sfx_ph->data);
+        if (at + 1 < sfx_ph->count) {
+            char nc = sfx_ph->data[at + 1];
+            bool phU = nc == '@'
+                || (nc == 'I' && at + 2 < sfx_ph->count
+                    && (sfx_ph->data[at + 2] == '#'
+                     || sfx_ph->data[at + 2] == '2'))
+                || (nc == 'a' && at + 2 < sfx_ph->count
+                    && sfx_ph->data[at + 2] == '#');
+            if (phU) { chars_erase_at(sfx_ph, at); }
+        }
+    }
+}
+
+// The 0x01 rule boundaries have done their job by this point.
+
+static void strip_rule_boundary_bytes(struct chars * phonemes) {
+    size_t w = 0;
+    for (size_t r = 0; r < phonemes->count; r++) {
+        if (phonemes->data[r] != '\x01') {
+            phonemes->data[w++] = phonemes->data[r];
+        }
+    }
+    phonemes->count = w;
+    if (phonemes->data != NULL) {
+        phonemes->data[phonemes->count] = '\0';
+    }
+}
+
 static void process_prefix_rule(struct phonemizer * p,
                                 const char * word, size_t wn,
-                                int pos,
+                                int32_t pos,
                                 const struct rule_match * match,
                                 struct chars * phonemes,
                                 struct chars * out) {
@@ -7321,108 +8355,141 @@ static void process_prefix_rule(struct phonemizer * p,
     size_t suffix_off = (size_t)(pos + match->advance);
     const char * suffix = word + suffix_off;
     size_t sn = wn - suffix_off;
-    bool prefix_has_stress = memchr(phonemes->data, '\'',
-                                    phonemes->count) != NULL
-                          || memchr(phonemes->data, ',',
-                                    phonemes->count) != NULL
-                          || memchr(phonemes->data, '%',
-                                    phonemes->count) != NULL;
-    bool has_full_vowel = prefix_has_full_vowel(
-        phonemes->data, phonemes->count);
-    bool skip = !prefix_has_stress && has_full_vowel;
+    bool prefix_has_stress =
+        memchr(phonemes->data, '\'', phonemes->count) != NULL
+        || memchr(phonemes->data, ',', phonemes->count) != NULL
+        || memchr(phonemes->data, '%', phonemes->count) != NULL;
+    bool skip = !prefix_has_stress
+        && prefix_has_full_vowel(phonemes->data, phonemes->count);
     if (!skip) {
         struct chars sfx_ph = {0};
-        // Lowercase suffix once for the set/map lookups.
-        struct chars sfx_lo = {0};
-        to_lower(suffix, sn, &sfx_lo);
-        bool onlys = set_has(&p->onlys_words, suffix, sn);
-        bool noun_form = set_has(&p->noun_form_stress,
-                                 sfx_lo.data, sfx_lo.count);
-        bool verb_flag = set_has(&p->verb_flag_words,
-                                 sfx_lo.data, sfx_lo.count);
-        if (onlys || noun_form || verb_flag) {
-            // Force rule-based phonemes (skip dict).
-            struct chars rules_out = {0};
-            apply_rules(p, suffix, sn, true, -1, false, false,
-                        NULL, 0, NULL, 0, &rules_out);
-            process_phoneme_string(rules_out.data,
-                                   rules_out.count, false, &sfx_ph);
-            chars_free(&rules_out);
-        } else {
-            word_to_phonemes(p, suffix, sn, &sfx_ph);
-        }
-        chars_free(&sfx_lo);
-        // Stress demotion when both prefix and suffix carry '\''.
+        prefix_rule_suffix_phonemes(p, suffix, sn, &sfx_ph);
         bool pfx_has_prime = memchr(phonemes->data, '\'',
                                     phonemes->count) != NULL;
         bool sfx_has_prime = memchr(sfx_ph.data, '\'',
                                     sfx_ph.count) != NULL;
         if (pfx_has_prime && sfx_has_prime) {
-            int sfx_syllables = count_suffix_syllables(suffix, sn);
-            int pfx_vowels = count_prefix_vowels(
-                phonemes->data, phonemes->count);
-            bool pfx_ends_schwa = false;
-            if (sfx_syllables == 2 && pfx_vowels >= 2) {
-                pfx_ends_schwa = prefix_ends_in_schwa(
-                    phonemes->data, phonemes->count);
-            }
-            if (sfx_syllables >= 2 && pfx_vowels >= 2
-                && !pfx_ends_schwa) {
-                // Demote prefix primary -> secondary.
-                char * pp = memchr(phonemes->data, '\'',
-                                   phonemes->count);
-                if (pp != NULL) { *pp = ','; }
-            } else if (pfx_vowels == 1) {
-                // Remove suffix primary entirely.
-                char * sp = memchr(sfx_ph.data, '\'', sfx_ph.count);
-                if (sp != NULL) {
-                    size_t at = (size_t)(sp - sfx_ph.data);
-                    memmove(sp, sp + 1, sfx_ph.count - at - 1);
-                    sfx_ph.count--;
-                    sfx_ph.data[sfx_ph.count] = '\0';
-                }
-            } else {
-                // Demote suffix primary -> secondary.
-                char * sp = memchr(sfx_ph.data, '\'', sfx_ph.count);
-                if (sp != NULL) { *sp = ','; }
-            }
-            // Post-demotion: drop ',' immediately before a
-            // phUNSTRESSED vowel (@, I#, I2, a#).
-            char * cp = memchr(sfx_ph.data, ',', sfx_ph.count);
-            if (cp != NULL) {
-                size_t at = (size_t)(cp - sfx_ph.data);
-                if (at + 1 < sfx_ph.count) {
-                    char nc = sfx_ph.data[at + 1];
-                    bool phU = nc == '@'
-                        || (nc == 'I' && at + 2 < sfx_ph.count
-                            && (sfx_ph.data[at + 2] == '#'
-                             || sfx_ph.data[at + 2] == '2'))
-                        || (nc == 'a' && at + 2 < sfx_ph.count
-                            && sfx_ph.data[at + 2] == '#');
-                    if (phU) {
-                        memmove(cp, cp + 1,
-                                sfx_ph.count - at - 1);
-                        sfx_ph.count--;
-                        sfx_ph.data[sfx_ph.count] = '\0';
-                    }
-                }
-            }
+            demote_double_primary(phonemes, &sfx_ph, suffix, sn);
+            drop_secondary_before_reduced(&sfx_ph);
         }
-        // Strip '\x01' rule-boundary markers from prefix phonemes
-        // before combining.
-        size_t w = 0;
-        for (size_t r = 0; r < phonemes->count; r++) {
-            if (phonemes->data[r] != '\x01') {
-                phonemes->data[w++] = phonemes->data[r];
-            }
-        }
-        phonemes->count = w;
-        if (phonemes->data != NULL) {
-            phonemes->data[phonemes->count] = '\0';
-        }
+        strip_rule_boundary_bytes(phonemes);
         chars_put(out, phonemes->data, phonemes->count);
         chars_put(out, sfx_ph.data, sfx_ph.count);
         chars_free(&sfx_ph);
+    }
+}
+
+// Mutable state of the apply_rules scan: the cursor, the phonemes
+// built so far, and the result a terminal suffix or prefix rule
+// substitutes for them when it ends the scan early.
+struct rule_scan {
+    struct chars phonemes;
+    struct chars final_result;
+    bool *       replaced_e;
+    bool *       pos_visited;
+    int32_t      len;
+    int32_t      pos;
+    bool         finished;
+};
+
+// A deleted span phonemizes as 'E' when the scan reaches it.
+
+static void apply_match_deletions(struct rule_scan * sc,
+                                  const struct rule_match * match) {
+    if (match->del_count > 0 && match->del_start >= 0) {
+        for (int32_t d = 0;
+             d < match->del_count
+             && match->del_start + d < sc->len; d++) {
+            sc->replaced_e[match->del_start + d] = true;
+        }
+    }
+}
+
+// A prefix rule that produced phonemes ends the scan; one that
+// produced none only advances the cursor.
+
+static void apply_prefix_match(struct phonemizer * p,
+                               const struct chars * word,
+                               const struct rule_match * match,
+                               struct rule_scan * sc) {
+    struct chars pfx_res = {0};
+    process_prefix_rule(p, word->data, word->count, sc->pos, match,
+                        &sc->phonemes, &pfx_res);
+    if (pfx_res.count > 0) {
+        sc->final_result.count = 0;
+        chars_put(&sc->final_result, pfx_res.data, pfx_res.count);
+        sc->finished = true;
+    } else {
+        sc->pos += match->advance;
+    }
+    chars_free(&pfx_res);
+}
+
+static void apply_matched_rule(struct phonemizer * p,
+                               const struct chars * word,
+                               int32_t word_alt_flags,
+                               bool allow_suffix_strip,
+                               bool suffix_phoneme_only,
+                               struct rule_match * match,
+                               struct rule_scan * sc) {
+    apply_stress_prev(&match->phonemes, &sc->phonemes);
+    chars_put(&sc->phonemes, match->phonemes.data,
+              match->phonemes.count);
+    chars_put_byte(&sc->phonemes, '\x01');
+    bool terminal_suffix = (allow_suffix_strip || suffix_phoneme_only)
+        && match->is_suffix
+        && sc->pos + match->advance == sc->len;
+    if (terminal_suffix && !suffix_phoneme_only) {
+        process_suffix_rule(p, word->data, word->count,
+                            word_alt_flags, match,
+                            &sc->final_result);
+        sc->finished = true;
+    } else if (terminal_suffix && suffix_phoneme_only) {
+        sc->pos += match->advance;
+    } else if (match->is_prefix
+               && sc->pos + match->advance < sc->len) {
+        apply_prefix_match(p, word, match, sc);
+    } else {
+        apply_match_deletions(sc, match);
+        sc->pos += match->advance;
+    }
+}
+
+static void copy_scan_flags(bool * dst, size_t cap,
+                            const bool * src, int32_t len) {
+    if (dst != NULL && cap > 0) {
+        size_t n = (size_t)len < cap ? (size_t)len : cap;
+        memcpy(dst, src, n * sizeof(bool));
+    }
+}
+
+static void run_rule_scan(struct phonemizer * p,
+                          const struct chars * word,
+                          int32_t word_alt_flags,
+                          bool allow_suffix_strip,
+                          bool suffix_phoneme_only,
+                          bool suffix_removed,
+                          struct rule_scan * sc) {
+    while (sc->pos < sc->len && !sc->finished) {
+        sc->pos_visited[sc->pos] = true;
+        char pos_char = sc->replaced_e[sc->pos]
+            ? 'E'
+            : (char)tolower((unsigned char)word->data[sc->pos]);
+        struct rule_match match = find_best_rule(
+            &p->rules, word->data, word->count, sc->pos, sc->len,
+            pos_char, word_alt_flags,
+            sc->replaced_e, (size_t)sc->len,
+            allow_suffix_strip, suffix_phoneme_only,
+            suffix_removed,
+            sc->phonemes.data, sc->phonemes.count);
+        if (match.score < 0) {
+            sc->pos++;
+        } else {
+            apply_matched_rule(p, word, word_alt_flags,
+                               allow_suffix_strip,
+                               suffix_phoneme_only, &match, sc);
+        }
+        rule_match_free(&match);
     }
 }
 
@@ -7436,7 +8503,7 @@ static void process_prefix_rule(struct phonemizer * p,
 static void apply_rules(struct phonemizer * p,
                         const char * word_orig, size_t wn,
                         bool allow_suffix_strip,
-                        int word_alt_flags_param,
+                        int32_t word_alt_flags_param,
                         bool suffix_phoneme_only,
                         bool suffix_removed,
                         bool * out_replaced_e, size_t out_re_cap,
@@ -7448,96 +8515,31 @@ static void apply_rules(struct phonemizer * p,
     struct chars word = {0};
     chars_put(&word, word_orig, wn);
     apply_replacements(&word, &p->rules.replacements);
-    int len = (int)word.count;
-    int word_alt_flags = determine_alt_flags(
+    int32_t len = (int32_t)word.count;
+    int32_t word_alt_flags = determine_alt_flags(
         p, word.data, word.count, word_alt_flags_param);
-    bool * replaced_e = calloc((size_t)(len > 0 ? len : 1),
-                               sizeof(bool));
-    bool * pos_visited = calloc((size_t)(len > 0 ? len : 1),
-                                sizeof(bool));
-    struct chars phonemes = {0};
-    struct chars final_result = {0};
-    bool finished = false;
-    int pos = 0;
-    while (pos < len && !finished) {
-        pos_visited[pos] = true;
-        char pos_char = replaced_e[pos]
-            ? 'E'
-            : (char)tolower((unsigned char)word.data[pos]);
-        struct rule_match match = find_best_rule(
-            &p->rules, word.data, word.count, pos, len,
-            pos_char, word_alt_flags,
-            replaced_e, (size_t)len,
-            allow_suffix_strip, suffix_phoneme_only,
-            suffix_removed,
-            phonemes.data, phonemes.count);
-        if (match.score < 0) {
-            pos++;
-        } else {
-            apply_stress_prev(&match.phonemes, &phonemes);
-            chars_put(&phonemes, match.phonemes.data,
-                      match.phonemes.count);
-            chars_put_byte(&phonemes, '\x01');
-            bool terminal_suffix =
-                (allow_suffix_strip || suffix_phoneme_only)
-                && match.is_suffix
-                && pos + match.advance == len;
-            if (terminal_suffix && !suffix_phoneme_only) {
-                process_suffix_rule(p, word.data, word.count,
-                                    word_alt_flags, &match,
-                                    &final_result);
-                finished = true;
-            } else if (terminal_suffix && suffix_phoneme_only) {
-                pos += match.advance;
-            } else if (match.is_prefix
-                       && pos + match.advance < len) {
-                struct chars pfx_res = {0};
-                process_prefix_rule(p, word.data, word.count,
-                                    pos, &match, &phonemes,
-                                    &pfx_res);
-                if (pfx_res.count > 0) {
-                    final_result.count = 0;
-                    chars_put(&final_result, pfx_res.data,
-                              pfx_res.count);
-                    finished = true;
-                } else {
-                    pos += match.advance;
-                }
-                chars_free(&pfx_res);
-            } else {
-                if (match.del_count > 0 && match.del_start >= 0) {
-                    for (int d = 0;
-                         d < match.del_count
-                         && match.del_start + d < len; d++) {
-                        replaced_e[match.del_start + d] = true;
-                    }
-                }
-                pos += match.advance;
-            }
-        }
-        rule_match_free(&match);
-    }
-    // Copy out the replaced_e / pos_visited if caller asked.
-    if (out_replaced_e != NULL && out_re_cap > 0) {
-        size_t n = (size_t)len < out_re_cap
-            ? (size_t)len : out_re_cap;
-        memcpy(out_replaced_e, replaced_e, n * sizeof(bool));
-    }
-    if (out_pos_visited != NULL && out_pv_cap > 0) {
-        size_t n = (size_t)len < out_pv_cap
-            ? (size_t)len : out_pv_cap;
-        memcpy(out_pos_visited, pos_visited, n * sizeof(bool));
-    }
-    if (finished) {
-        chars_put(out, final_result.data, final_result.count);
+    struct rule_scan sc = {
+        .phonemes = {0}, .final_result = {0},
+        .replaced_e = calloc((size_t)(len > 0 ? len : 1),
+                             sizeof(bool)),
+        .pos_visited = calloc((size_t)(len > 0 ? len : 1),
+                              sizeof(bool)),
+        .len = len, .pos = 0, .finished = false
+    };
+    run_rule_scan(p, &word, word_alt_flags, allow_suffix_strip,
+                  suffix_phoneme_only, suffix_removed, &sc);
+    copy_scan_flags(out_replaced_e, out_re_cap, sc.replaced_e, len);
+    copy_scan_flags(out_pos_visited, out_pv_cap, sc.pos_visited, len);
+    if (sc.finished) {
+        chars_put(out, sc.final_result.data, sc.final_result.count);
     } else {
-        chars_put(out, phonemes.data, phonemes.count);
+        chars_put(out, sc.phonemes.data, sc.phonemes.count);
     }
-    chars_free(&phonemes);
-    chars_free(&final_result);
+    chars_free(&sc.phonemes);
+    chars_free(&sc.final_result);
     chars_free(&word);
-    free(replaced_e);
-    free(pos_visited);
+    free(sc.replaced_e);
+    free(sc.pos_visited);
 }
 
 // ---------------------------------------------------------------------------
@@ -7603,6 +8605,49 @@ static void emit_punct(struct tokens * out, struct chars * cur, char c) {
 //
 // The caller owns `out`; `tokens_clear(out)` runs at entry so any
 // previous contents are freed before the new tokens are emitted.
+// A UTF-8 lead byte plus all its continuation bytes (0x80..0xBF).
+
+static size_t take_utf8_sequence(const char * text, size_t n,
+                                 size_t i, struct chars * cur) {
+    chars_put_byte(cur, text[i]);
+    i++;
+    while (i < n && ((unsigned char)text[i] & 0xC0) == 0x80) {
+        chars_put_byte(cur, text[i]);
+        i++;
+    }
+    return i;
+}
+
+// "U." starts an abbreviation: a single capital, the period, and
+// another capital after it.
+
+static bool starts_abbreviation(const char * text, size_t n,
+                                size_t i, const struct chars * cur) {
+    return cur->count == 1 && isupper((unsigned char)cur->data[0])
+        && i + 1 < n && isupper((unsigned char)text[i + 1]);
+}
+
+// A period inside an accumulating abbreviation ("U.S" -> "U.S.")
+// closes the word; anywhere else it is plain punctuation.
+
+static void take_trailing_period(struct tokens * out,
+                                 struct chars * cur) {
+    if (memchr(cur->data, '.', cur->count) != NULL) {
+        chars_put_byte(cur, '.');
+        flush_word(out, cur);
+    } else {
+        emit_punct(out, cur, '.');
+    }
+}
+
+// A hyphen between letters keeps the word together.
+
+static bool hyphen_joins_word(const char * text, size_t n, size_t i,
+                              const struct chars * cur) {
+    return cur->count > 0 && i + 1 < n
+        && isalpha((unsigned char)text[i + 1]);
+}
+
 static void tokenize(const char * text, size_t n, struct tokens * out) {
     tokens_clear(out);
     struct chars cur = {0};
@@ -7610,43 +8655,18 @@ static void tokenize(const char * text, size_t n, struct tokens * out) {
     while (i < n) {
         unsigned char c = (unsigned char)text[i];
         if (c >= 0x80) {
-            // UTF-8 multi-byte: take lead byte then all continuation
-            // bytes (0x80..0xBF). Mirrors the .cpp loop.
-            chars_put_byte(&cur, text[i]);
-            i++;
-            while (i < n
-                   && ((unsigned char)text[i] & 0xC0) == 0x80) {
-                chars_put_byte(&cur, text[i]);
-                i++;
-            }
+            i = take_utf8_sequence(text, n, i, &cur);
         } else if (isalpha(c) || c == '\'') {
             chars_put_byte(&cur, (char)c);
             i++;
-        } else if (c == '.' && cur.count == 1
-                   && isupper((unsigned char)cur.data[0])
-                   && i + 1 < n
-                   && isupper((unsigned char)text[i + 1])) {
-            // Abbreviation start: single uppercase letter + '.' +
-            // next char is uppercase. E.g. "U.S." -- accumulate
-            // "U." into cur and keep collecting.
+        } else if (c == '.'
+                   && starts_abbreviation(text, n, i, &cur)) {
             chars_put_byte(&cur, '.');
             i++;
         } else if (c == '.' && cur.count > 0) {
-            // Trailing-period dispatch. If cur already contains a
-            // '.', we're mid-abbreviation ("U.S" -> "U.S.") --
-            // append the period and flush. Otherwise the period is
-            // plain punctuation. memchr is the find('.') equivalent.
-            if (memchr(cur.data, '.', cur.count) != NULL) {
-                chars_put_byte(&cur, '.');
-                i++;
-                flush_word(out, &cur);
-            } else {
-                emit_punct(out, &cur, (char)c);
-                i++;
-            }
-        } else if (c == '-' && cur.count > 0
-                   && i + 1 < n
-                   && isalpha((unsigned char)text[i + 1])) {
+            take_trailing_period(out, &cur);
+            i++;
+        } else if (c == '-' && hyphen_joins_word(text, n, i, &cur)) {
             chars_put_byte(&cur, (char)c);
             i++;
         } else if (isdigit(c)) {
@@ -7744,7 +8764,17 @@ static void phoneme_code_to_ipa_table(const char * code, size_t cn,
 // Phoneme-code -> IPA UTF-8 string with explicit overrides and the
 // ipa1-table fallback. Stress markers (', and ,) render as the
 // modifier letters U+02C8 / U+02CC. '%', '=', '|', '||', '==' have
-// no rendering — they are bookkeeping markers stripped here.
+// no rendering -- they are bookkeeping markers stripped here.
+// Unstressed / boundary / word-end markers carry no sound.
+
+static bool is_silent_marker_code(const char * code, size_t cn) {
+    return (cn == 1
+            && (code[0] == '%' || code[0] == '=' || code[0] == '|'))
+        || (cn == 2
+            && ((code[0] == '=' && code[1] == '=')
+             || (code[0] == '|' && code[1] == '|')));
+}
+
 static void single_code_to_ipa(struct phonemizer * p,
                                const char * code, size_t cn,
                                struct chars * out) {
@@ -7753,13 +8783,8 @@ static void single_code_to_ipa(struct phonemizer * p,
         chars_put(out, "\xcb\x88", 2);          // ˈ
     } else if (cn == 1 && code[0] == ',') {
         chars_put(out, "\xcb\x8c", 2);          // ˌ
-    } else if (cn == 1 &&
-        (code[0] == '%' || code[0] == '=' || code[0] == '|')) {
-        /* unstressed / boundary marker: nothing emitted */
-    } else if (cn == 2 &&
-        ((code[0] == '=' && code[1] == '=')
-         || (code[0] == '|' && code[1] == '|'))) {
-        /* word-end / double-unstressed marker: nothing emitted */
+    } else if (is_silent_marker_code(code, cn)) {
+        /* nothing emitted */
     } else if (cn > 0) {
         struct chars * over = smap_get(&p->ipa_overrides, code, cn);
         if (over != NULL) {
@@ -7789,24 +8814,21 @@ static const char * const MULTI_CODES[] = {
     NULL
 };
 
-// Greedy multi-char match starting at pstr[*i], skipping "false
-// diphthongs" i@/U@ after %/=. Absorbs variant-marker digits whose
-// IPA mapping is identity. Emits any pending stress before vowel or
-// syllabic-consonant codes (both act as syllable nuclei).
-static void emit_phoneme_code(struct phonemizer * p,
-                              const char * pstr, size_t plen,
-                              size_t * i,
-                              struct chars * pending_stress,
-                              bool * last_was_unstress,
-                              bool * last_code_was_vowel,
-                              struct chars * result) {
+// The longest MULTI_CODES entry at *i, or the single byte there.
+// Advances *i past what it took. "i@" / "U@" after %/= are false
+// diphthongs and are not matched as pairs.
+
+static void match_multi_code(const char * pstr, size_t plen,
+                             size_t * i, bool last_was_unstress,
+                             const char ** out_code,
+                             size_t * out_len) {
     const char * code = NULL;
     size_t code_len = 0;
     bool found = false;
-    for (int mi = 0; MULTI_CODES[mi] != NULL && !found; mi++) {
+    for (int32_t mi = 0; MULTI_CODES[mi] != NULL && !found; mi++) {
         const char * mc = MULTI_CODES[mi];
         size_t mclen = strlen(mc);
-        bool skip = *last_was_unstress && mclen == 2
+        bool skip = last_was_unstress && mclen == 2
             && (strcmp(mc, "i@") == 0 || strcmp(mc, "U@") == 0);
         if (!skip && *i + mclen <= plen
             && memcmp(pstr + *i, mc, mclen) == 0) {
@@ -7821,20 +8843,53 @@ static void emit_phoneme_code(struct phonemizer * p,
         code_len = 1;
         (*i)++;
     }
-    *last_was_unstress = false;
+    *out_code = code;
+    *out_len = code_len;
+}
+
+// Variant-marker digits map to themselves in IPA and carry no sound.
+
+static void skip_identity_variant_digits(const char * pstr,
+                                         size_t plen, size_t * i) {
     while (*i < plen && pstr[*i] >= '0' && pstr[*i] <= '9'
            && ASCII_TO_IPA[(unsigned char)pstr[*i] - 0x20]
               == (unsigned char)pstr[*i]) {
         (*i)++;
     }
-    bool is_syllabic = (code_len == 2
+}
+
+// Syllabic consonants are syllable nuclei, so they attract a pending
+// stress exactly as a vowel does.
+
+static bool is_syllabic_code(const char * code, size_t code_len) {
+    return code_len == 2
         && ((code[0] == 'n' && code[1] == '-')
             || (code[0] == 'm' && code[1] == '-')
             || (code[0] == '@' && code[1] == 'L')
             || (code[0] == 'r' && code[1] == '-')
-            || (code[0] == 'l' && code[1] == '/')));
+            || (code[0] == 'l' && code[1] == '/'));
+}
+
+// Greedy multi-char match starting at pstr[*i], skipping "false
+// diphthongs" i@/U@ after %/=. Absorbs variant-marker digits whose
+// IPA mapping is identity. Emits any pending stress before vowel or
+// syllabic-consonant codes (both act as syllable nuclei).
+static void emit_phoneme_code(struct phonemizer * p,
+                              const char * pstr, size_t plen,
+                              size_t * i,
+                              struct chars * pending_stress,
+                              bool * last_was_unstress,
+                              bool * last_code_was_vowel,
+                              struct chars * result) {
+    const char * code = NULL;
+    size_t code_len = 0;
+    match_multi_code(pstr, plen, i, *last_was_unstress,
+                     &code, &code_len);
+    *last_was_unstress = false;
+    skip_identity_variant_digits(pstr, plen, i);
     bool emit_stress = pending_stress->count > 0
-        && (is_vowel_code(code, code_len) || is_syllabic);
+        && (is_vowel_code(code, code_len)
+            || is_syllabic_code(code, code_len));
     if (emit_stress) {
         chars_put(result, pending_stress->data,
                   pending_stress->count);
@@ -7971,7 +9026,7 @@ static const struct ipa_override_entry IPA_EN_GB[] = {
 
 static void load_override_table(struct phonemizer * p,
                                 const struct ipa_override_entry * t) {
-    for (int i = 0; t[i].code != NULL; i++) {
+    for (int32_t i = 0; t[i].code != NULL; i++) {
         smap_set(&p->ipa_overrides,
                  t[i].code, strlen(t[i].code),
                  t[i].ipa, strlen(t[i].ipa));
@@ -8009,6 +9064,40 @@ static bool contains_stress_marker(const char * ipa, size_t n) {
     return found;
 }
 
+static bool is_ascii_vowel_char(unsigned char c) {
+    char lc = (char)tolower(c);
+    return lc == 'a' || lc == 'e' || lc == 'i'
+        || lc == 'o' || lc == 'u';
+}
+
+// ɐ ɑ ɒ ɔ ə ɚ ɛ ɜ ɞ ɪ ɵ all live in the C9-XX block.
+
+static bool is_ipa_vowel_c9(unsigned char c2) {
+    return c2 == 0x90 || c2 == 0x91 || c2 == 0x92
+        || c2 == 0x94 || c2 == 0x99 || c2 == 0x9A
+        || c2 == 0x9B || c2 == 0x9C || c2 == 0x9E
+        || c2 == 0xAA || c2 == 0xB5;
+}
+
+// The two-byte IPA vowels: æ ø (C3), œ (C5), the C9 block, ʊ ʌ (CA).
+// (Historical: the C3 branch also listed c2==0x93 and the comment
+// claimed it was œ, but U+0153 œ encodes as 0xC5 0x93, not 0xC3
+// 0x93 -- hence the separate 0xC5 branch.)
+
+static bool is_ipa_vowel_pair(unsigned char c, unsigned char c2) {
+    bool r = false;
+    if (c == 0xC3) {
+        r = (c2 == 0xA6 || c2 == 0xB8);
+    } else if (c == 0xC5) {
+        r = (c2 == 0x93);
+    } else if (c == 0xC9) {
+        r = is_ipa_vowel_c9(c2);
+    } else if (c == 0xCA) {
+        r = (c2 == 0x8A || c2 == 0x8C);
+    }
+    return r;
+}
+
 // True iff `s[i..)` starts with an IPA vowel character. Covers the
 // ASCII vowels plus the UTF-8 ranges used by the override tables
 // (æ ø œ in C3-XX, ɐ ɑ ɒ ɔ ə ɚ ɛ ɜ ɞ ɪ ɵ in C9-XX, ʊ ʌ in CA-XX,
@@ -8018,31 +9107,14 @@ static bool is_ipa_vowel_start(const char * s, size_t n, size_t i) {
     if (i < n) {
         unsigned char c = (unsigned char)s[i];
         if (c < 0x80) {
-            char lc = (char)tolower((unsigned char)c);
-            r = (lc == 'a' || lc == 'e' || lc == 'i'
-                 || lc == 'o' || lc == 'u');
+            r = is_ascii_vowel_char(c);
         } else if (i + 1 < n) {
             unsigned char c2 = (unsigned char)s[i + 1];
-            if (c == 0xC3) {
-                // æ=0xA6, ø=0xB8.
-                // (Historical: this branch also listed c2==0x93
-                // and the comment claimed it was œ, but U+0153 œ
-                // encodes as 0xC5 0x93, not 0xC3 0x93 — see the
-                // 0xC5 branch below.)
-                r = (c2 == 0xA6 || c2 == 0xB8);
-            } else if (c == 0xC5) {
-                // œ = U+0153 = 0xC5 0x93.
-                r = (c2 == 0x93);
-            } else if (c == 0xC9) {
-                r = (c2 == 0x90 || c2 == 0x91 || c2 == 0x92
-                     || c2 == 0x94 || c2 == 0x99 || c2 == 0x9A
-                     || c2 == 0x9B || c2 == 0x9C || c2 == 0x9E
-                     || c2 == 0xAA || c2 == 0xB5);
-            } else if (c == 0xCA) {
-                r = (c2 == 0x8A || c2 == 0x8C);
-            } else if (c == 0xE1 && i + 2 < n) {
+            if (c == 0xE1 && i + 2 < n) {
                 unsigned char c3 = (unsigned char)s[i + 2];
                 r = (c2 == 0xB5 && c3 == 0xBB);
+            } else {
+                r = is_ipa_vowel_pair(c, c2);
             }
         }
     }
@@ -8150,7 +9222,7 @@ static const char * const NUM_TENS[] = {
 
 // Recursive cardinal-number speller. Writes lower-case words
 // separated by single spaces into *out (caller-owned).
-static void int_to_words(int n, struct chars * out) {
+static void int_to_words(int32_t n, struct chars * out) {
     if (n == 0) {
         chars_puts(out, "zero");
     } else {
@@ -8201,10 +9273,10 @@ static bool expand_number_token(struct phonemizer * p,
     }
     bool consumed = false;
     if (all_digits) {
-        long long num_val = strtoll(t->text.data, NULL, 10);
+        int64_t num_val = strtoll(t->text.data, NULL, 10);
         if (num_val >= 0 && num_val <= 9999999LL) {
             struct chars num_words = {0};
-            int_to_words((int)num_val, &num_words);
+            int_to_words((int32_t)num_val, &num_words);
             // Walk space-separated sub-words.
             size_t i = 0;
             bool is_first_sub = true;
@@ -8324,95 +9396,90 @@ static void spell_group(struct phonemizer * p,
     }
 }
 
+static bool is_all_upper(const char * s, size_t n) {
+    bool all_upper = n >= 2;
+    for (size_t i = 0; i < n; i++) {
+        if (!isupper((unsigned char)s[i])) { all_upper = false; }
+    }
+    return all_upper;
+}
+
+// The all-nasal test carves hum-interjection shapes out of the letter-
+// spell trigger: a token whose letters are ALL drawn from {m, h, n} is
+// the canonical shape of a nasal interjection ("Mmm", "Mhm", "Hmm",
+// "Mhmm", "Nn", "Mn"). Real abbreviations like "Ph", "PhD" and "BSc"
+// carry other consonants and pass this gate unchanged. The rules engine
+// renders the lowercased nasal form correctly already, so the
+// capitalized form is left to fall through to it.
+
+static bool is_mixed_case_no_vowel(const char * s, size_t n) {
+    bool any_upper = false, any_lower = false, any_vowel = false;
+    bool all_nasal = true;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char ch = (unsigned char)s[i];
+        if (isupper(ch)) { any_upper = true; }
+        if (islower(ch)) { any_lower = true; }
+        char lc = (char)tolower(ch);
+        if (is_plain_vowel(lc)) { any_vowel = true; }
+        if (!is_nasal_letter(lc)) { all_nasal = false; }
+    }
+    return any_upper && any_lower && !any_vowel && !all_nasal;
+}
+
+// CamelCase split: a new group starts wherever a lower letter is
+// followed by an upper one.
+
+static void spell_acronym_groups(struct phonemizer * p,
+                                 const struct token * t,
+                                 bool split_camel,
+                                 struct chars * result,
+                                 bool * first_word) {
+    bool first_grp = true;
+    size_t gs = 0;
+    for (size_t ci = 0; ci <= t->text.count; ci++) {
+        bool boundary = split_camel && ci > 0 && ci < t->text.count
+            && islower((unsigned char)t->text.data[ci - 1])
+            && isupper((unsigned char)t->text.data[ci]);
+        if (boundary || ci == t->text.count) {
+            if (ci > gs) {
+                struct chars ipa = {0};
+                spell_group(p, t->text.data + gs, ci - gs, &ipa);
+                if (ipa.count > 0) {
+                    bool lead_space = first_grp
+                        ? (t->needs_space && !*first_word) : true;
+                    if (lead_space) { chars_put_byte(result, ' '); }
+                    chars_put(result, ipa.data, ipa.count);
+                    *first_word = false;
+                    first_grp = false;
+                }
+                chars_free(&ipa);
+            }
+            gs = ci;
+        }
+    }
+}
+
 // Acronym / mixed-case-no-vowel handler. Returns true iff the token
 // matched and IPA was appended; false leaves *result alone.
+
 static bool spell_acronym_token(struct phonemizer * p,
                                 const struct token * t,
                                 struct chars * result,
                                 bool * first_word) {
     struct chars lower = {0};
     to_lower(t->text.data, t->text.count, &lower);
-    bool all_upper = t->text.count >= 2;
-    for (size_t i = 0; i < t->text.count; i++) {
-        if (!isupper((unsigned char)t->text.data[i])) {
-            all_upper = false;
-        }
-    }
+    bool all_upper = is_all_upper(t->text.data, t->text.count);
     bool unknown_word = smap_get(&p->dict,
                                  lower.data, lower.count) == NULL;
-    bool mixed_case_no_vowel_abbrev = false;
-    if (!all_upper && t->text.count >= 2 && unknown_word) {
-        bool any_upper = false, any_lower = false, any_vowel = false;
-        bool all_nasal = true;
-        for (size_t i = 0; i < t->text.count; i++) {
-            unsigned char ch = (unsigned char)t->text.data[i];
-            if (isupper(ch)) { any_upper = true; }
-            if (islower(ch)) { any_lower = true; }
-            char lc = (char)tolower(ch);
-            if (lc == 'a' || lc == 'e' || lc == 'i'
-                || lc == 'o' || lc == 'u') {
-                any_vowel = true;
-            }
-            // `all_nasal` carves out hum-interjection shapes from
-            // the letter-spell trigger below: tokens whose letters
-            // are ALL drawn from {m, h, n} are the canonical shape
-            // of nasal interjections ("Mmm", "Mhm", "Hmm", "Mhmm",
-            // "Nn", "Mn"). Real abbreviations like "Ph", "PhD",
-            // "BSc" include other consonants so they fall through
-            // this gate unchanged. Mixed-case + no-vowel + non-
-            // nasal is still treated as a letter-spelled
-            // abbreviation. The phonemizer's rules engine handles
-            // the lowercased nasal form correctly (e.g. "mmm" ->
-            // /məm/, "mhm" -> /məm/), so we just want the
-            // capitalized form to fall through to it.
-            if (lc != 'm' && lc != 'h' && lc != 'n') {
-                all_nasal = false;
-            }
-        }
-        mixed_case_no_vowel_abbrev =
-            any_upper && any_lower && !any_vowel && !all_nasal;
-    }
-    bool consumed = false;
-    bool trigger = (all_upper || mixed_case_no_vowel_abbrev)
+    bool mixed_case_no_vowel_abbrev = !all_upper
+        && t->text.count >= 2 && unknown_word
+        && is_mixed_case_no_vowel(t->text.data, t->text.count);
+    bool consumed = (all_upper || mixed_case_no_vowel_abbrev)
         && (set_has(&p->abbrev_words, lower.data, lower.count)
             || unknown_word);
-    if (trigger) {
-        // CamelCase split for mixed-case abbreviations.
-        // Walk text; new group starts whenever prev is lower and
-        // current is upper.
-        bool first_grp = true;
-        size_t gs = 0;
-        for (size_t ci = 0; ci <= t->text.count; ci++) {
-            bool boundary = false;
-            if (mixed_case_no_vowel_abbrev && ci > 0
-                && ci < t->text.count
-                && islower((unsigned char)t->text.data[ci - 1])
-                && isupper((unsigned char)t->text.data[ci])) {
-                boundary = true;
-            }
-            if (boundary || ci == t->text.count) {
-                if (ci > gs) {
-                    struct chars ipa = {0};
-                    spell_group(p, t->text.data + gs, ci - gs,
-                                &ipa);
-                    if (ipa.count > 0) {
-                        if (first_grp) {
-                            if (t->needs_space && !*first_word) {
-                                chars_put_byte(result, ' ');
-                            }
-                        } else {
-                            chars_put_byte(result, ' ');
-                        }
-                        chars_put(result, ipa.data, ipa.count);
-                        *first_word = false;
-                        first_grp = false;
-                    }
-                    chars_free(&ipa);
-                }
-                gs = ci;
-            }
-        }
-        consumed = true;
+    if (consumed) {
+        spell_acronym_groups(p, t, mixed_case_no_vowel_abbrev,
+                             result, first_word);
     }
     chars_free(&lower);
     return consumed;
@@ -8514,47 +9581,64 @@ static bool word_is_vowel_initial_non_yod(struct phonemizer * p,
 // True iff the next word starts with a vowel phoneme code. Handles
 // abbreviation-style first-letter spelling when the token contains
 // '.', is all-upper-unknown, or is in abbrev_words.
+static bool token_is_all_upper(const struct chars * text) {
+    bool all_upper = text->count > 0;
+    for (size_t i = 0; i < text->count; i++) {
+        if (!isupper((unsigned char)text->data[i])) {
+            all_upper = false;
+        }
+    }
+    return all_upper;
+}
+
+// An all-caps token the dictionary does not know, or one flagged as
+// an abbreviation, is read out letter by letter.
+
+static bool spells_out_letter_by_letter(struct phonemizer * p,
+                                        const struct chars * text) {
+    bool spells_out = false;
+    if (token_is_all_upper(text)) {
+        struct chars lower_nxt = {0};
+        to_lower(text->data, text->count, &lower_nxt);
+        bool unknown = smap_get(&p->dict, lower_nxt.data,
+                                lower_nxt.count) == NULL;
+        bool is_abbrev = set_has(&p->abbrev_words, lower_nxt.data,
+                                 lower_nxt.count);
+        spells_out = unknown || is_abbrev;
+        chars_free(&lower_nxt);
+    }
+    return spells_out;
+}
+
+// Phonemes of the token's first alphabetic character on its own.
+
+static void first_letter_phonemes(struct phonemizer * p,
+                                  const struct chars * text,
+                                  struct chars * out) {
+    bool found = false;
+    for (size_t i = 0; i < text->count && !found; i++) {
+        char lc = text->data[i];
+        if (isalpha((unsigned char)lc)) {
+            word_to_phonemes(p, &lc, 1, out);
+            found = true;
+        }
+    }
+}
+
 static bool next_word_is_vowel_initial(struct phonemizer * p,
                                        const struct tokens * ts,
                                        size_t tj) {
-    bool use_first_letter = (memchr(ts->data[tj].text.data, '.',
-                                    ts->data[tj].text.count)
-                             != NULL);
-    if (!use_first_letter && ts->data[tj].text.count >= 2) {
-        bool all_upper = ts->data[tj].text.count > 0;
-        for (size_t i = 0; i < ts->data[tj].text.count; i++) {
-            if (!isupper(
-                (unsigned char)ts->data[tj].text.data[i])) {
-                all_upper = false;
-            }
-        }
-        if (all_upper) {
-            struct chars lower_nxt = {0};
-            to_lower(ts->data[tj].text.data,
-                     ts->data[tj].text.count, &lower_nxt);
-            bool unknown = smap_get(&p->dict, lower_nxt.data,
-                                    lower_nxt.count) == NULL;
-            bool is_abbrev = set_has(&p->abbrev_words,
-                                     lower_nxt.data,
-                                     lower_nxt.count);
-            if (unknown || is_abbrev) { use_first_letter = true; }
-            chars_free(&lower_nxt);
-        }
+    const struct chars * text = &ts->data[tj].text;
+    bool use_first_letter = memchr(text->data, '.', text->count)
+                            != NULL;
+    if (!use_first_letter && text->count >= 2) {
+        use_first_letter = spells_out_letter_by_letter(p, text);
     }
     struct chars next_ph = {0};
     if (use_first_letter) {
-        bool found = false;
-        for (size_t i = 0;
-             i < ts->data[tj].text.count && !found; i++) {
-            char lc = ts->data[tj].text.data[i];
-            if (isalpha((unsigned char)lc)) {
-                word_to_phonemes(p, &lc, 1, &next_ph);
-                found = true;
-            }
-        }
+        first_letter_phonemes(p, text, &next_ph);
     } else {
-        word_to_phonemes(p, ts->data[tj].text.data,
-                         ts->data[tj].text.count, &next_ph);
+        word_to_phonemes(p, text->data, text->count, &next_ph);
     }
     size_t pi = 0;
     while (pi < next_ph.count
@@ -8650,6 +9734,38 @@ static void apply_inter_word_t_flap(struct phonemizer * p,
     }
 }
 
+// A schwa preceded by another vowel is the tail of a diphthong
+// digraph, not a standalone schwa.
+
+static bool trailing_schwa_is_standalone(const struct chars * ph) {
+    char prev = ph->count >= 2 ? ph->data[ph->count - 2] : 0;
+    return !(prev == 'A' || prev == 'e' || prev == 'O'
+             || prev == 'o' || prev == 'U' || prev == 'i');
+}
+
+// The next word's first phoneme, past any stress markers, is /r/.
+
+static bool next_word_starts_with_r(struct phonemizer * p,
+                                    const struct tokens * ts,
+                                    size_t tj) {
+    bool starts_r = false;
+    if (tj < ts->count && ts->data[tj].is_word
+        && ts->data[tj].text.count > 0) {
+        struct chars nph = {0};
+        word_to_phonemes(p, ts->data[tj].text.data,
+                         ts->data[tj].text.count, &nph);
+        size_t pi = 0;
+        while (pi < nph.count
+               && (nph.data[pi] == '\'' || nph.data[pi] == ','
+                   || nph.data[pi] == '%' || nph.data[pi] == '=')) {
+            pi++;
+        }
+        starts_r = pi < nph.count && nph.data[pi] == 'r';
+        chars_free(&nph);
+    }
+    return starts_r;
+}
+
 // Cross-word @->3 rhotacization. Standalone trailing '@' (schwa)
 // promotes to '3' (ɚ) before an r-initial next word. Skipped when
 // '@' is the tail of a diphthong digraph (i@/e@/A@/O@/o@/U@).
@@ -8659,36 +9775,47 @@ static void apply_cross_word_schwa_rhotic(struct phonemizer * p,
                                           bool is_isolated_word,
                                           const struct tokens * ts,
                                           struct chars * ph_codes) {
-    if (is_en_us && !is_isolated_word
-        && ph_codes->count > 0
-        && ph_codes->data[ph_codes->count - 1] == '@') {
-        char prev = ph_codes->count >= 2
-            ? ph_codes->data[ph_codes->count - 2] : 0;
-        bool standalone = !(prev == 'A' || prev == 'e' || prev == 'O'
-                            || prev == 'o' || prev == 'U'
-                            || prev == 'i');
-        if (standalone) {
-            size_t tj = ti + 1;
-            if (tj < ts->count && ts->data[tj].is_word
-                && ts->data[tj].text.count > 0) {
-                struct chars nph = {0};
-                word_to_phonemes(p, ts->data[tj].text.data,
-                                 ts->data[tj].text.count, &nph);
-                size_t pi = 0;
-                while (pi < nph.count
-                       && (nph.data[pi] == '\''
-                           || nph.data[pi] == ','
-                           || nph.data[pi] == '%'
-                           || nph.data[pi] == '=')) {
-                    pi++;
-                }
-                if (pi < nph.count && nph.data[pi] == 'r') {
-                    ph_codes->data[ph_codes->count - 1] = '3';
-                }
-                chars_free(&nph);
-            }
-        }
+    if (is_en_us && !is_isolated_word && ph_codes->count > 0
+        && ph_codes->data[ph_codes->count - 1] == '@'
+        && trailing_schwa_is_standalone(ph_codes)
+        && next_word_starts_with_r(p, ts, ti + 1)) {
+        ph_codes->data[ph_codes->count - 1] = '3';
     }
+}
+
+// Index of the first word token at or after tj; ts->count when the
+// utterance has none left.
+
+static size_t next_word_index(const struct tokens * ts, size_t tj) {
+    while (tj < ts->count && !ts->data[tj].is_word) { tj++; }
+    return tj;
+}
+
+// The next word's first phoneme, past any stress markers, is a
+// vowel.
+
+static bool next_word_phoneme_is_vowel(struct phonemizer * p,
+                                       const struct tokens * ts,
+                                       size_t tj) {
+    static const char NEXT_VOWELS[] = "aAeEiIoOuUV03@";
+    bool is_vowel = false;
+    if (tj < ts->count && ts->data[tj].text.count > 0) {
+        struct chars nph = {0};
+        word_to_phonemes(p, ts->data[tj].text.data,
+                         ts->data[tj].text.count, &nph);
+        size_t pi2 = 0;
+        while (pi2 < nph.count
+               && (nph.data[pi2] == '\''
+                   || nph.data[pi2] == ','
+                   || nph.data[pi2] == '%'
+                   || nph.data[pi2] == '=')) {
+            pi2++;
+        }
+        is_vowel = pi2 < nph.count
+            && strchr(NEXT_VOWELS, nph.data[pi2]) != NULL;
+        chars_free(&nph);
+    }
+    return is_vowel;
 }
 
 // Cross-word /t/ flap on "it" before vowel-initial next word.
@@ -8706,32 +9833,11 @@ static void apply_cross_word_t_flap(struct phonemizer * p,
         && tolower((unsigned char)t->text.data[1]) == 't');
     if (is_en_us && !is_isolated_word
         && ipa->count > 0 && ipa->data[ipa->count - 1] == 't'
-        && token_is_it) {
-        size_t tj = ti + 1;
-        while (tj < ts->count && !ts->data[tj].is_word) { tj++; }
-        if (tj < ts->count && ts->data[tj].text.count > 0) {
-            struct chars nph = {0};
-            word_to_phonemes(p, ts->data[tj].text.data,
-                             ts->data[tj].text.count, &nph);
-            size_t pi2 = 0;
-            while (pi2 < nph.count
-                   && (nph.data[pi2] == '\''
-                       || nph.data[pi2] == ','
-                       || nph.data[pi2] == '%'
-                       || nph.data[pi2] == '=')) {
-                pi2++;
-            }
-            if (pi2 < nph.count) {
-                char fc = nph.data[pi2];
-                static const char NEXT_VOWELS[] = "aAeEiIoOuUV03@";
-                bool nv = strchr(NEXT_VOWELS, fc) != NULL;
-                if (nv) {
-                    ipa->count--;          // drop trailing 't'
-                    chars_put(ipa, "\xC9\xBE", 2); // ɾ
-                }
-            }
-            chars_free(&nph);
-        }
+        && token_is_it
+        && next_word_phoneme_is_vowel(p, ts,
+                                      next_word_index(ts, ti + 1))) {
+        ipa->count--;                   // drop trailing 't'
+        chars_put(ipa, "\xC9\xBE", 2);  // ɾ
     }
 }
 
@@ -8746,7 +9852,7 @@ static void fix_diphthong_stress_position(struct chars * ph_codes) {
             char prev = ph_codes->data[si - 1];
             char next = ph_codes->data[si + 1];
             bool matched = false;
-            for (int di = 0; DIPHS[di] != NULL && !matched; di++) {
+            for (int32_t di = 0; DIPHS[di] != NULL && !matched; di++) {
                 matched = (DIPHS[di][0] == prev
                            && DIPHS[di][1] == next);
                 if (matched) {
@@ -8781,6 +9887,46 @@ static void apply_pre_vowel_the_fixup(bool phrase_pre_vowel_the,
     }
 }
 
+// A '%' word with no primary is unstressed, unless it carries a
+// secondary outside a matched phrase.
+
+static bool pct_word_unstressed(const char * ph_codes, size_t pn,
+                                bool phrase_matched,
+                                bool is_isolated_word) {
+    bool has_pct = memchr(ph_codes, '%', pn) != NULL;
+    bool has_prime = memchr(ph_codes, '\'', pn) != NULL;
+    bool has_comma = memchr(ph_codes, ',', pn) != NULL;
+    return has_pct && !has_prime
+        && (!has_comma || phrase_matched) && !is_isolated_word;
+}
+
+// @2 / @5 with no stress marker of its own stays weak.
+
+static bool has_weak_schwa_only(const char * ph_codes, size_t pn) {
+    bool has_prime = memchr(ph_codes, '\'', pn) != NULL;
+    bool has_comma = memchr(ph_codes, ',', pn) != NULL;
+    bool has_at2 = pn >= 2 && memmem(ph_codes, pn, "@2", 2) != NULL;
+    bool has_at5 = pn >= 2 && memmem(ph_codes, pn, "@5", 2) != NULL;
+    return (has_at2 || has_at5) && !has_prime && !has_comma;
+}
+
+// The articles "a" / "an", phonemized as a# / a#n, never take stress
+// in a sentence.
+
+static bool is_unstressed_article(const struct token * t,
+                                  const char * ph_codes, size_t pn,
+                                  bool is_isolated_word) {
+    struct chars tl = {0};
+    to_lower(t->text.data, t->text.count, &tl);
+    bool is_a = tl.count == 1 && tl.data[0] == 'a';
+    bool is_an = tl.count == 2 && memcmp(tl.data, "an", 2) == 0;
+    chars_free(&tl);
+    bool is_a_sharp = pn == 2 && memcmp(ph_codes, "a#", 2) == 0;
+    bool is_a_sharp_n = pn == 3 && memcmp(ph_codes, "a#n", 3) == 0;
+    return !is_isolated_word && (is_a || is_an)
+        && (is_a_sharp || is_a_sharp_n);
+}
+
 // Default-stress decision. Inserts ˈ before the first non-schwa
 // vowel UNLESS the token is inherently unstressed (% function word,
 // $u-flagged in context, weak-schwa @2/@5 with no stress, article
@@ -8793,27 +9939,12 @@ static void maybe_add_default_stress(struct phonemizer * p,
                                      const char * ph_codes,
                                      size_t pn,
                                      struct chars * ipa) {
-    bool has_pct = memchr(ph_codes, '%', pn) != NULL;
-    bool has_prime = memchr(ph_codes, '\'', pn) != NULL;
-    bool has_comma = memchr(ph_codes, ',', pn) != NULL;
-    bool pct_unstressed = has_pct && !has_prime
-        && (!has_comma || phrase_matched) && !is_isolated_word;
-    bool u_unstressed = is_unstressed_word && !is_isolated_word;
-    bool has_at2 = pn >= 2 && memmem(ph_codes, pn, "@2", 2) != NULL;
-    bool has_at5 = pn >= 2 && memmem(ph_codes, pn, "@5", 2) != NULL;
-    bool weak_schwa = (has_at2 || has_at5)
-        && !has_prime && !has_comma;
-    struct chars tl = {0};
-    to_lower(t->text.data, t->text.count, &tl);
-    bool is_a = tl.count == 1 && tl.data[0] == 'a';
-    bool is_an = tl.count == 2 && memcmp(tl.data, "an", 2) == 0;
-    bool is_a_sharp = pn == 2 && memcmp(ph_codes, "a#", 2) == 0;
-    bool is_a_sharp_n = pn == 3 && memcmp(ph_codes, "a#n", 3) == 0;
-    bool article_a = !is_isolated_word && (is_a || is_an)
-        && (is_a_sharp || is_a_sharp_n);
-    chars_free(&tl);
-    bool no_stress = pct_unstressed || weak_schwa || u_unstressed
-        || article_a;
+    bool no_stress = pct_word_unstressed(ph_codes, pn,
+                                         phrase_matched,
+                                         is_isolated_word)
+        || has_weak_schwa_only(ph_codes, pn)
+        || (is_unstressed_word && !is_isolated_word)
+        || is_unstressed_article(t, ph_codes, pn, is_isolated_word);
     if (!no_stress) {
         struct chars adjusted = {0};
         add_default_stress(ipa->data, ipa->count, &adjusted);
@@ -8829,9 +9960,9 @@ static void maybe_add_default_stress(struct phonemizer * p,
 // realises the 2/1 schedule.
 static void update_pos_context_counters(struct phonemizer * p,
                                         const struct token * t,
-                                        int * expect_past,
-                                        int * expect_noun,
-                                        int * expect_verb) {
+                                        int32_t * expect_past,
+                                        int32_t * expect_noun,
+                                        int32_t * expect_verb) {
     struct chars lw = {0};
     to_lower(t->text.data, t->text.count, &lw);
     if (set_has(&p->pastf_words, lw.data, lw.count)) {
@@ -8860,9 +9991,9 @@ static void apply_pos_context_override(struct phonemizer * p,
                                        const struct token * t,
                                        bool is_isolated_word,
                                        bool phrase_matched,
-                                       int expect_past,
-                                       int expect_noun,
-                                       int expect_verb,
+                                       int32_t expect_past,
+                                       int32_t expect_noun,
+                                       int32_t expect_verb,
                                        struct chars * ph_codes) {
     if (!is_isolated_word && !phrase_matched) {
         struct chars lw = {0};
@@ -8927,9 +10058,99 @@ static void apply_atend_override(struct phonemizer * p,
     }
 }
 
+static void lemma_override_the(struct phonemizer * p, size_t ti,
+                               const struct tokens * ts,
+                               struct chars * ph_codes) {
+    size_t tj = find_next_word_stop_on_punct(ts, ti + 1);
+    if (tj != (size_t)-1
+        && word_is_vowel_initial_non_yod(p, ts, tj)) {
+        ph_codes->count = 0;
+        chars_put(ph_codes, "%DI", 3);
+    }
+}
+
+static void lemma_override_a(bool is_isolated_word,
+                             struct chars * ph_codes) {
+    ph_codes->count = 0;
+    if (is_isolated_word) {
+        chars_put(ph_codes, "eI", 2);
+    } else {
+        chars_put(ph_codes, "a#", 2);
+    }
+}
+
+static void lemma_override_an(size_t ti, const struct tokens * ts,
+                              struct chars * ph_codes) {
+    size_t tj2 = find_next_non_empty_word(ts, ti + 1);
+    bool next_vowel_initial = false;
+    if (tj2 != (size_t)-1) {
+        char fc = (char)tolower(
+            (unsigned char)ts->data[tj2].text.data[0]);
+        next_vowel_initial = is_plain_vowel(fc);
+    }
+    ph_codes->count = 0;
+    if (next_vowel_initial) {
+        chars_put(ph_codes, "a#n", 3);
+    } else {
+        chars_put(ph_codes, "an", 2);
+    }
+}
+
+static void lemma_override_to(struct phonemizer * p, size_t ti,
+                              const struct tokens * ts,
+                              bool is_isolated_word,
+                              size_t last_word_ti,
+                              struct chars * ph_codes) {
+    ph_codes->count = 0;
+    if (is_isolated_word || ti == last_word_ti) {
+        chars_put(ph_codes, "tu:", 3);
+    } else {
+        size_t tj2 = find_next_non_empty_word(ts, ti + 1);
+        bool use_tU = tj2 != (size_t)-1
+            && word_is_vowel_initial_non_yod(p, ts, tj2);
+        if (use_tU) {
+            chars_put(ph_codes, "tU", 2);
+        } else {
+            chars_put(ph_codes, "t@5", 3);
+        }
+    }
+}
+
+// "use" after a pronoun subject is the verb /ju:z/, not the noun.
+
+static void lemma_override_use(size_t ti, const struct tokens * ts,
+                               struct chars * ph_codes) {
+    static const char * const PRONOUNS[] = {
+        "i", "we", "you", "they", "he", "she", "who", NULL
+    };
+    struct chars prev_word = {0};
+    bool found = false;
+    int32_t tj = (int32_t)ti - 1;
+    while (tj >= 0 && !found) {
+        if (ts->data[tj].is_word) {
+            to_lower(ts->data[tj].text.data,
+                     ts->data[tj].text.count, &prev_word);
+            found = true;
+        }
+        tj--;
+    }
+    bool is_pronoun = false;
+    for (int32_t i = 0; PRONOUNS[i] != NULL && !is_pronoun; i++) {
+        size_t pl = strlen(PRONOUNS[i]);
+        is_pronoun = prev_word.count == pl
+            && memcmp(prev_word.data, PRONOUNS[i], pl) == 0;
+    }
+    if (is_pronoun) {
+        ph_codes->count = 0;
+        chars_put(ph_codes, "ju:z", 4);
+    }
+    chars_free(&prev_word);
+}
+
 // Hand-coded function-word allophone overrides. Each branch is
 // mutually exclusive (lemma equality gate). See .cpp comment for
 // the linguistic justification of each branch.
+
 static void apply_lemma_override(struct phonemizer * p,
                                  const struct token * t, size_t ti,
                                  const struct tokens * ts,
@@ -8944,83 +10165,22 @@ static void apply_lemma_override(struct phonemizer * p,
     bool eq_to = lw.count == 2 && memcmp(lw.data, "to", 2) == 0;
     bool eq_use = lw.count == 3 && memcmp(lw.data, "use", 3) == 0;
     if (eq_the && ph_codes->count > 0) {
-        size_t tj = find_next_word_stop_on_punct(ts, ti + 1);
-        if (tj != (size_t)-1
-            && word_is_vowel_initial_non_yod(p, ts, tj)) {
-            ph_codes->count = 0;
-            chars_put(ph_codes, "%DI", 3);
-        }
+        lemma_override_the(p, ti, ts, ph_codes);
     }
-    if (eq_a) {
-        ph_codes->count = 0;
-        if (is_isolated_word) {
-            chars_put(ph_codes, "eI", 2);
-        } else {
-            chars_put(ph_codes, "a#", 2);
-        }
-    }
+    if (eq_a) { lemma_override_a(is_isolated_word, ph_codes); }
     if (eq_an && !is_isolated_word) {
-        size_t tj2 = find_next_non_empty_word(ts, ti + 1);
-        bool next_vowel_initial = false;
-        if (tj2 != (size_t)-1) {
-            char fc = (char)tolower(
-                (unsigned char)ts->data[tj2].text.data[0]);
-            next_vowel_initial = (fc == 'a' || fc == 'e'
-                || fc == 'i' || fc == 'o' || fc == 'u');
-        }
-        ph_codes->count = 0;
-        if (next_vowel_initial) {
-            chars_put(ph_codes, "a#n", 3);
-        } else {
-            chars_put(ph_codes, "an", 2);
-        }
+        lemma_override_an(ti, ts, ph_codes);
     }
     if (eq_to) {
-        ph_codes->count = 0;
-        if (is_isolated_word || ti == last_word_ti) {
-            chars_put(ph_codes, "tu:", 3);
-        } else {
-            size_t tj2 = find_next_non_empty_word(ts, ti + 1);
-            bool use_tU = (tj2 != (size_t)-1
-                && word_is_vowel_initial_non_yod(p, ts, tj2));
-            if (use_tU) {
-                chars_put(ph_codes, "tU", 2);
-            } else {
-                chars_put(ph_codes, "t@5", 3);
-            }
-        }
+        lemma_override_to(p, ti, ts, is_isolated_word, last_word_ti,
+                          ph_codes);
     }
     if (eq_use && !is_isolated_word) {
-        static const char * const PRONOUNS[] = {
-            "i", "we", "you", "they", "he", "she", "who", NULL
-        };
-        struct chars prev_word = {0};
-        if (ti > 0) {
-            bool found = false;
-            int tj = (int)ti - 1;
-            while (tj >= 0 && !found) {
-                if (ts->data[tj].is_word) {
-                    to_lower(ts->data[tj].text.data,
-                             ts->data[tj].text.count, &prev_word);
-                    found = true;
-                }
-                tj--;
-            }
-        }
-        bool is_pronoun = false;
-        for (int i = 0; PRONOUNS[i] != NULL && !is_pronoun; i++) {
-            size_t pl = strlen(PRONOUNS[i]);
-            is_pronoun = prev_word.count == pl
-                && memcmp(prev_word.data, PRONOUNS[i], pl) == 0;
-        }
-        if (is_pronoun) {
-            ph_codes->count = 0;
-            chars_put(ph_codes, "ju:z", 4);
-        }
-        chars_free(&prev_word);
+        lemma_override_use(ti, ts, ph_codes);
     }
     chars_free(&lw);
 }
+
 
 // ---------------------------------------------------------------------------
 // Step B + Step C: function-word stress assignment (D-26d). Step B
@@ -9063,7 +10223,7 @@ static const char * const STEP_C_NEEDS_SECONDARY[] = {
 static bool word_list_has(const char * const * list,
                           const char * w, size_t wn) {
     bool found = false;
-    for (int i = 0; list[i] != NULL && !found; i++) {
+    for (int32_t i = 0; list[i] != NULL && !found; i++) {
         size_t li = strlen(list[i]);
         if (li == wn && memcmp(list[i], w, wn) == 0) {
             found = true;
@@ -9106,6 +10266,25 @@ static bool is_ing_of_strend_secondary(struct phonemizer * p,
     return result;
 }
 
+// A following word is weak when it is not itself a keep-secondary
+// word and its dictionary entry opens with ',' or '%'.
+
+static bool following_word_is_weak(struct phonemizer * p,
+                                   const struct chars * fw) {
+    bool fw_is_strend_sec = set_has(&p->comma_strend2_words,
+                                    fw->data, fw->count);
+    bool fw_is_ing_strend = is_ing_of_strend_secondary(p, fw->data,
+                                                       fw->count);
+    bool fw_in_secondary_set =
+        word_list_has(STEP_C_KEEP_SECONDARY, fw->data, fw->count)
+        || set_has(&p->u2_strend2_words, fw->data, fw->count)
+        || fw_is_strend_sec || fw_is_ing_strend;
+    struct chars * dit = smap_get(&p->dict, fw->data, fw->count);
+    return !fw_in_secondary_set
+        && dit != NULL && dit->count > 0
+        && (dit->data[0] == ',' || dit->data[0] == '%');
+}
+
 // keep_sec -> primary promotion: a keep_sec word gets promoted to
 // primary stress when no following stressed content remains.
 static void try_promote_keep_sec_to_primary(struct phonemizer * p,
@@ -9123,25 +10302,10 @@ static void try_promote_keep_sec_to_primary(struct phonemizer * p,
                 struct chars fw = {0};
                 to_lower(ts->data[tj].text.data,
                          ts->data[tj].text.count, &fw);
-                if (!set_has(&p->unstressed_words,
-                             fw.data, fw.count)) {
-                    bool fw_is_strend_sec = set_has(
-                        &p->comma_strend2_words, fw.data, fw.count);
-                    bool fw_is_ing_strend =
-                        is_ing_of_strend_secondary(p,
-                            fw.data, fw.count);
-                    bool fw_in_secondary_set =
-                        word_list_has(STEP_C_KEEP_SECONDARY,
-                                      fw.data, fw.count)
-                        || set_has(&p->u2_strend2_words,
-                                   fw.data, fw.count)
-                        || fw_is_strend_sec || fw_is_ing_strend;
-                    struct chars * dit = smap_get(&p->dict,
-                                                  fw.data, fw.count);
-                    bool fw_weak = !fw_in_secondary_set
-                        && dit != NULL && dit->count > 0
-                        && (dit->data[0] == ',' || dit->data[0] == '%');
-                    if (!fw_weak) { has_following_stressed = true; }
+                if (!set_has(&p->unstressed_words, fw.data,
+                             fw.count)
+                    && !following_word_is_weak(p, &fw)) {
+                    has_following_stressed = true;
                 }
                 chars_free(&fw);
             }
@@ -9156,45 +10320,77 @@ static void try_promote_keep_sec_to_primary(struct phonemizer * p,
     }
 }
 
+static size_t first_comma_pos(const struct chars * ph_codes) {
+    size_t comma_pos = ph_codes->count;
+    for (size_t i = 0;
+         i < ph_codes->count && comma_pos == ph_codes->count; i++) {
+        if (ph_codes->data[i] == ',') { comma_pos = i; }
+    }
+    return comma_pos;
+}
+
+// A '%' may stand between the string start and the comma.
+
+static bool comma_at_string_start(const struct chars * ph_codes,
+                                  size_t comma_pos) {
+    return comma_pos == 0
+        || (comma_pos == 1 && ph_codes->count > 0
+            && ph_codes->data[0] == '%');
+}
+
+// Stress markers do not count as vowels for this scan.
+
+static bool no_real_vowel_before_comma(const struct chars * ph_codes,
+                                       size_t comma_pos) {
+    static const char VOWEL_CHARS[] = "aAeEiIoOuUV03@";
+    bool none = true;
+    for (size_t k = 0; k < comma_pos && none; k++) {
+        char cc = ph_codes->data[k];
+        if (cc != '\'' && cc != '%' && cc != '='
+            && strchr(VOWEL_CHARS, cc) != NULL) {
+            none = false;
+        }
+    }
+    return none;
+}
+
+// A comma with no vowel before it leads the word even when other
+// codes precede it.
+
+static bool comma_is_leading(const struct chars * ph_codes,
+                             size_t comma_pos) {
+    bool at_start = comma_at_string_start(ph_codes, comma_pos);
+    bool effectively_leading = !at_start
+        && comma_pos < ph_codes->count
+        && no_real_vowel_before_comma(ph_codes, comma_pos);
+    return at_start || effectively_leading;
+}
+
+// A phrase-level '%' prefix owns the stress, so the comma stays.
+
+static bool is_pct_phrase_prefix(const struct chars * ph_codes,
+                                 bool phrase_matched,
+                                 bool is_isolated_word,
+                                 bool has_prime) {
+    return phrase_matched && ph_codes->count > 0
+        && ph_codes->data[0] == '%' && !is_isolated_word
+        && !has_prime;
+}
+
 // Leading-comma gated ',' -> '\'' promotion.
 static void apply_comma_to_primary_promotion(bool keep_sec,
                                              bool needs_sec,
                                              bool phrase_matched,
                                              bool is_isolated_word,
                                              struct chars * ph_codes) {
-    size_t comma_pos = ph_codes->count;
-    for (size_t i = 0;
-         i < ph_codes->count && comma_pos == ph_codes->count; i++) {
-        if (ph_codes->data[i] == ',') { comma_pos = i; }
-    }
-    bool comma_at_start = (comma_pos == 0
-        || (comma_pos == 1 && ph_codes->count > 0
-            && ph_codes->data[0] == '%'));
-    static const char VOWEL_CHARS[] = "aAeEiIoOuUV03@";
-    bool no_real_vowel_before = true;
-    if (!comma_at_start && comma_pos < ph_codes->count) {
-        for (size_t k = 0; k < comma_pos && no_real_vowel_before;
-             k++) {
-            char cc = ph_codes->data[k];
-            if (cc != '\'' && cc != '%' && cc != '='
-                && strchr(VOWEL_CHARS, cc) != NULL) {
-                no_real_vowel_before = false;
-            }
-        }
-    } else {
-        no_real_vowel_before = false;
-    }
-    bool effectively_leading = !comma_at_start
-        && comma_pos < ph_codes->count
-        && no_real_vowel_before;
-    bool leading_comma = comma_at_start || effectively_leading;
+    size_t comma_pos = first_comma_pos(ph_codes);
+    bool leading_comma = comma_is_leading(ph_codes, comma_pos);
     bool has_prime = memchr(ph_codes->data, '\'',
                             ph_codes->count) != NULL;
-    bool is_pct_phrase = phrase_matched && ph_codes->count > 0
-        && ph_codes->data[0] == '%' && !is_isolated_word
-        && !has_prime;
     bool should_promote = !keep_sec && !needs_sec && !has_prime
-        && comma_pos < ph_codes->count && !is_pct_phrase
+        && comma_pos < ph_codes->count
+        && !is_pct_phrase_prefix(ph_codes, phrase_matched,
+                                 is_isolated_word, has_prime)
         && (is_isolated_word || !leading_comma);
     if (should_promote) {
         replace_first_char(ph_codes, ',', '\'');
@@ -9205,6 +10401,69 @@ static void apply_comma_to_primary_promotion(bool keep_sec,
 // step-B keep-secondary set), and from %-prefix words whose only
 // primary is the step-5 last-resort before 'a#'. Returns
 // is_unstressed_word for use by maybe_add_default_stress.
+static size_t first_byte_pos(const struct chars * s, char c) {
+    size_t at = s->count;
+    for (size_t i = 0; i < s->count && at == s->count; i++) {
+        if (s->data[i] == c) { at = i; }
+    }
+    return at;
+}
+
+// A trailing 's clitic does not change whether the word is
+// unstressed.
+
+static bool token_is_unstressed_word(struct phonemizer * p,
+                                     const struct chars * tl,
+                                     bool phrase_matched) {
+    size_t apos_pos = first_byte_pos(tl, '\'');
+    return !phrase_matched
+        && (set_has(&p->unstressed_words, tl->data, tl->count)
+            || (apos_pos != tl->count
+                && set_has(&p->unstressed_words, tl->data,
+                           apos_pos)));
+}
+
+// Position of the "'a#" that the step-5 last resort leaves behind.
+
+static size_t prime_before_hash_a_pos(const struct chars * ph_codes) {
+    size_t at = ph_codes->count;
+    if (ph_codes->count >= 3) {
+        for (size_t i = 0;
+             i + 2 < ph_codes->count && at == ph_codes->count; i++) {
+            if (ph_codes->data[i] == '\''
+                && ph_codes->data[i + 1] == 'a'
+                && ph_codes->data[i + 2] == '#') {
+                at = i;
+            }
+        }
+    }
+    return at;
+}
+
+// A %-prefix word whose only primary is that last resort.
+
+static bool is_pct_last_resort_word(const struct chars * ph_codes,
+                                    bool is_isolated_word) {
+    size_t prime_pos = first_byte_pos(ph_codes, '\'');
+    size_t hash_a_pos = prime_before_hash_a_pos(ph_codes);
+    return !is_isolated_word
+        && ph_codes->count > 0 && ph_codes->data[0] == '%'
+        && prime_pos < ph_codes->count
+        && hash_a_pos < ph_codes->count
+        && prime_pos == hash_a_pos;
+}
+
+static void strip_all_primes(struct chars * ph_codes) {
+    size_t wi = 0;
+    for (size_t ri = 0; ri < ph_codes->count; ri++) {
+        if (ph_codes->data[ri] != '\'') {
+            ph_codes->data[wi++] = ph_codes->data[ri];
+        }
+    }
+    ph_codes->count = wi;
+    ph_codes->data[ph_codes->count] = '\0';
+}
+
 static bool apply_step_b(struct phonemizer * p,
                          const struct token * t,
                          bool phrase_matched,
@@ -9212,54 +10471,15 @@ static bool apply_step_b(struct phonemizer * p,
                          struct chars * ph_codes) {
     struct chars token_lower = {0};
     to_lower(t->text.data, t->text.count, &token_lower);
-    // unstress_check = token_lower without trailing 's clitic.
-    size_t apos_pos = token_lower.count;
-    for (size_t i = 0;
-         i < token_lower.count && apos_pos == token_lower.count;
-         i++) {
-        if (token_lower.data[i] == '\'') { apos_pos = i; }
-    }
-    bool is_unstressed_word = !phrase_matched
-        && (set_has(&p->unstressed_words,
-                    token_lower.data, token_lower.count)
-            || (apos_pos != token_lower.count
-                && set_has(&p->unstressed_words,
-                           token_lower.data, apos_pos)));
-    size_t prime_pos = ph_codes->count;
-    for (size_t i = 0;
-         i < ph_codes->count && prime_pos == ph_codes->count; i++) {
-        if (ph_codes->data[i] == '\'') { prime_pos = i; }
-    }
-    size_t hash_a_pos = ph_codes->count;
-    if (ph_codes->count >= 3) {
-        for (size_t i = 0;
-             i + 2 < ph_codes->count && hash_a_pos == ph_codes->count;
-             i++) {
-            if (ph_codes->data[i] == '\''
-                && ph_codes->data[i + 1] == 'a'
-                && ph_codes->data[i + 2] == '#') {
-                hash_a_pos = i;
-            }
-        }
-    }
-    bool is_pct_word = !is_isolated_word
-        && ph_codes->count > 0 && ph_codes->data[0] == '%'
-        && prime_pos < ph_codes->count
-        && hash_a_pos < ph_codes->count
-        && prime_pos == hash_a_pos;
+    bool is_unstressed_word = token_is_unstressed_word(
+        p, &token_lower, phrase_matched);
     bool is_step_b_keep_sec = word_list_has(
         STEP_B_KEEP_SECONDARY_WORDS,
         token_lower.data, token_lower.count);
-    if ((is_unstressed_word || is_pct_word)
+    if ((is_unstressed_word
+         || is_pct_last_resort_word(ph_codes, is_isolated_word))
         && !is_isolated_word && !is_step_b_keep_sec) {
-        size_t wi = 0;
-        for (size_t ri = 0; ri < ph_codes->count; ri++) {
-            if (ph_codes->data[ri] != '\'') {
-                ph_codes->data[wi++] = ph_codes->data[ri];
-            }
-        }
-        ph_codes->count = wi;
-        ph_codes->data[ph_codes->count] = '\0';
+        strip_all_primes(ph_codes);
     }
     chars_free(&token_lower);
     return is_unstressed_word;
@@ -9269,6 +10489,57 @@ static bool apply_step_b(struct phonemizer * p,
 // Computes keep_sec/needs_sec/is_strend_secondary/is_ing_of_strend/
 // is_keep_sec_phrase from token + state, then runs promotion,
 // demotion, leading-comma-gated promotion, and $unstressend demotion.
+// The word keeps a secondary instead of taking the primary.
+
+static bool step_c_keeps_secondary(struct phonemizer * p,
+                                   const struct chars * tl,
+                                   bool is_isolated_word,
+                                   const struct chars * ph_codes,
+                                   const char * matched_phrase_key,
+                                   size_t mpk_n) {
+    bool has_prime = memchr(ph_codes->data, '\'',
+                            ph_codes->count) != NULL;
+    bool is_strend_secondary =
+        set_has(&p->comma_strend2_words, tl->data, tl->count)
+        && ph_codes->count > 0 && ph_codes->data[0] == ','
+        && !has_prime;
+    bool is_ing_of_strend = is_ing_of_strend_secondary(p, tl->data,
+                                                       tl->count);
+    bool is_keep_sec_phrase = mpk_n > 0
+        && set_has(&p->keep_sec_phrase_keys, matched_phrase_key,
+                   mpk_n);
+    return !is_isolated_word
+        && (word_list_has(STEP_C_KEEP_SECONDARY, tl->data, tl->count)
+            || set_has(&p->u2_strend2_words, tl->data, tl->count)
+            || set_has(&p->u_plus_secondary_words, tl->data,
+                       tl->count)
+            || is_strend_secondary || is_ing_of_strend
+            || is_keep_sec_phrase);
+}
+
+// A word that needs a secondary and carries no stress at all gets
+// one on its first strong vowel.
+
+static void insert_secondary_at_strong_vowel(struct chars * ph_codes) {
+    static const char STRONG_VOWELS[] = "aAeEiIoOuUV3";
+    size_t pos = ph_codes->count;
+    for (size_t i = 0;
+         i < ph_codes->count && pos == ph_codes->count; i++) {
+        if (strchr(STRONG_VOWELS, ph_codes->data[i]) != NULL) {
+            pos = i;
+        }
+    }
+    if (pos < ph_codes->count) {
+        chars_grow(ph_codes, ph_codes->count + 2);
+        memmove(ph_codes->data + pos + 1,
+                ph_codes->data + pos,
+                ph_codes->count - pos);
+        ph_codes->data[pos] = ',';
+        ph_codes->count++;
+        ph_codes->data[ph_codes->count] = '\0';
+    }
+}
+
 static void apply_step_c(struct phonemizer * p,
                          const struct token * t, size_t ti,
                          const struct tokens * ts,
@@ -9279,25 +10550,9 @@ static void apply_step_c(struct phonemizer * p,
                          struct chars * ph_codes) {
     struct chars tl = {0};
     to_lower(t->text.data, t->text.count, &tl);
-    bool has_prime = memchr(ph_codes->data, '\'',
-                            ph_codes->count) != NULL;
-    bool is_strend_secondary =
-        set_has(&p->comma_strend2_words, tl.data, tl.count)
-        && ph_codes->count > 0 && ph_codes->data[0] == ','
-        && !has_prime;
-    bool is_ing_of_strend = is_ing_of_strend_secondary(p,
-        tl.data, tl.count);
-    bool is_keep_sec_phrase = mpk_n > 0
-        && set_has(&p->keep_sec_phrase_keys,
-                   matched_phrase_key, mpk_n);
-    bool keep_sec = !is_isolated_word
-        && (word_list_has(STEP_C_KEEP_SECONDARY,
-                          tl.data, tl.count)
-            || set_has(&p->u2_strend2_words, tl.data, tl.count)
-            || set_has(&p->u_plus_secondary_words,
-                       tl.data, tl.count)
-            || is_strend_secondary || is_ing_of_strend
-            || is_keep_sec_phrase);
+    bool keep_sec = step_c_keeps_secondary(p, &tl, is_isolated_word,
+                                          ph_codes,
+                                          matched_phrase_key, mpk_n);
     bool needs_sec = !is_isolated_word
         && word_list_has(STEP_C_NEEDS_SECONDARY, tl.data, tl.count);
     try_promote_keep_sec_to_primary(p, tl.data, tl.count, ti, ts,
@@ -9305,26 +10560,10 @@ static void apply_step_c(struct phonemizer * p,
     if (keep_sec) { replace_first_char(ph_codes, '\'', ','); }
     bool has_comma = memchr(ph_codes->data, ',',
                             ph_codes->count) != NULL;
-    has_prime = memchr(ph_codes->data, '\'',
-                       ph_codes->count) != NULL;
+    bool has_prime = memchr(ph_codes->data, '\'',
+                            ph_codes->count) != NULL;
     if (needs_sec && !has_prime && !has_comma) {
-        static const char STRONG_VOWELS[] = "aAeEiIoOuUV3";
-        size_t pos = ph_codes->count;
-        for (size_t i = 0;
-             i < ph_codes->count && pos == ph_codes->count; i++) {
-            if (strchr(STRONG_VOWELS, ph_codes->data[i]) != NULL) {
-                pos = i;
-            }
-        }
-        if (pos < ph_codes->count) {
-            chars_grow(ph_codes, ph_codes->count + 2);
-            memmove(ph_codes->data + pos + 1,
-                    ph_codes->data + pos,
-                    ph_codes->count - pos);
-            ph_codes->data[pos] = ',';
-            ph_codes->count++;
-            ph_codes->data[ph_codes->count] = '\0';
-        }
+        insert_secondary_at_strong_vowel(ph_codes);
     }
     apply_comma_to_primary_promotion(keep_sec, needs_sec,
                                      phrase_matched,
@@ -9375,7 +10614,7 @@ static const char * lookup_const_table(
         const struct ipa_override_entry * t,
         const char * k, size_t kn) {
     const char * result = NULL;
-    for (int i = 0; t[i].code != NULL && result == NULL; i++) {
+    for (int32_t i = 0; t[i].code != NULL && result == NULL; i++) {
         size_t li = strlen(t[i].code);
         if (li == kn && memcmp(t[i].code, k, kn) == 0) {
             result = t[i].ipa;
@@ -9589,6 +10828,97 @@ try_clitic_or_phrase(struct phonemizer * p,
     return r;
 }
 
+// Each letter of the abbreviation, phonemized from its "_x" spelling
+// entry when the dictionary has one.
+
+static void collect_letter_phonemes(struct phonemizer * p,
+                                    const struct chars * text,
+                                    struct charsv * letter_ipa) {
+    for (size_t ci = 0; ci < text->count; ci++) {
+        char lc = text->data[ci];
+        if (isalpha((unsigned char)lc)) {
+            char lc_lower = (char)tolower((unsigned char)lc);
+            char uk[2] = { '_', lc_lower };
+            struct chars * uit = smap_get(&p->dict, uk, 2);
+            struct chars entry = {0};
+            if (uit != NULL) {
+                chars_put(&entry, uit->data, uit->count);
+            } else {
+                word_to_phonemes(p, &lc, 1, &entry);
+            }
+            charsv_put(letter_ipa, entry);
+            entry = (struct chars){0};
+        }
+    }
+}
+
+// Every letter but the last carries a secondary: its own first
+// marker becomes that secondary and any later marker is dropped.
+
+static void append_secondary_letter(struct chars * combined,
+                                    const struct chars * code) {
+    size_t first = code->count;
+    for (size_t k = 0;
+         k < code->count && first == code->count; k++) {
+        if (code->data[k] == '\'' || code->data[k] == ',') {
+            first = k;
+        }
+    }
+    if (first == code->count) {
+        chars_put_byte(combined, ',');
+        chars_put(combined, code->data, code->count);
+    } else {
+        chars_put(combined, code->data, first);
+        chars_put_byte(combined, ',');
+        for (size_t k = first + 1; k < code->count; k++) {
+            char c2 = code->data[k];
+            if (c2 != '\'' && c2 != ',') {
+                chars_put_byte(combined, c2);
+            }
+        }
+    }
+}
+
+// The last letter carries the primary.
+
+static void append_primary_letter(struct chars * combined,
+                                  const struct chars * code) {
+    bool has_prime = memchr(code->data, '\'', code->count) != NULL;
+    if (!has_prime) { chars_put_byte(combined, '\''); }
+    chars_put(combined, code->data, code->count);
+}
+
+static void combine_letter_codes(const struct charsv * letter_ipa,
+                                 struct chars * combined) {
+    for (size_t li = 0; li < letter_ipa->count; li++) {
+        const struct chars * code = &letter_ipa->data[li];
+        if (li + 1 < letter_ipa->count) {
+            append_secondary_letter(combined, code);
+        } else {
+            append_primary_letter(combined, code);
+        }
+    }
+}
+
+static void emit_spelled_abbreviation(struct phonemizer * p,
+                                      const struct token * t,
+                                      const struct charsv * ipa,
+                                      struct chars * result,
+                                      bool * first_word) {
+    struct chars combined_codes = {0};
+    combine_letter_codes(ipa, &combined_codes);
+    struct chars combined_ipa = {0};
+    phonemes_to_ipa(p, combined_codes.data, combined_codes.count,
+                    &combined_ipa);
+    if (t->needs_space && !*first_word) {
+        chars_put_byte(result, ' ');
+    }
+    chars_put(result, combined_ipa.data, combined_ipa.count);
+    *first_word = false;
+    chars_free(&combined_ipa);
+    chars_free(&combined_codes);
+}
+
 // Period-abbrev expansion. "U.S." / "U.K." / "N.Y." -> letter-spell
 // with secondary stress on all but the last letter and primary on
 // the last. Returns true and appends IPA when expanded; otherwise
@@ -9603,74 +10933,11 @@ static bool expand_period_abbreviation(struct phonemizer * p,
     bool has_dot = memchr(t->text.data, '.', t->text.count) != NULL;
     if (has_dot) {
         struct charsv letter_ipa = {0};
-        for (size_t ci = 0; ci < t->text.count; ci++) {
-            char lc = t->text.data[ci];
-            if (isalpha((unsigned char)lc)) {
-                char lc_lower = (char)tolower((unsigned char)lc);
-                char uk[2] = { '_', lc_lower };
-                struct chars * uit = smap_get(&p->dict, uk, 2);
-                struct chars entry = {0};
-                if (uit != NULL) {
-                    chars_put(&entry, uit->data, uit->count);
-                } else {
-                    word_to_phonemes(p, &lc, 1, &entry);
-                }
-                charsv_put(&letter_ipa, entry);
-                entry = (struct chars){0};
-            }
-        }
+        collect_letter_phonemes(p, &t->text, &letter_ipa);
         if (letter_ipa.count >= 2) {
-            struct chars combined_codes = {0};
-            for (size_t li = 0; li < letter_ipa.count; li++) {
-                struct chars * code = &letter_ipa.data[li];
-                if (li + 1 < letter_ipa.count) {
-                    size_t first = code->count;
-                    for (size_t k = 0;
-                         k < code->count && first == code->count;
-                         k++) {
-                        if (code->data[k] == '\''
-                            || code->data[k] == ',') {
-                            first = k;
-                        }
-                    }
-                    if (first == code->count) {
-                        chars_put_byte(&combined_codes, ',');
-                        chars_put(&combined_codes,
-                                  code->data, code->count);
-                    } else {
-                        chars_put(&combined_codes,
-                                  code->data, first);
-                        chars_put_byte(&combined_codes, ',');
-                        for (size_t k = first + 1;
-                             k < code->count; k++) {
-                            char c2 = code->data[k];
-                            if (c2 != '\'' && c2 != ',') {
-                                chars_put_byte(&combined_codes, c2);
-                            }
-                        }
-                    }
-                } else {
-                    bool has_prime = memchr(code->data, '\'',
-                                            code->count) != NULL;
-                    if (!has_prime) {
-                        chars_put_byte(&combined_codes, '\'');
-                    }
-                    chars_put(&combined_codes, code->data,
-                              code->count);
-                }
-            }
-            struct chars combined_ipa = {0};
-            phonemes_to_ipa(p, combined_codes.data,
-                            combined_codes.count, &combined_ipa);
-            if (t->needs_space && !*first_word) {
-                chars_put_byte(result, ' ');
-            }
-            chars_put(result, combined_ipa.data,
-                      combined_ipa.count);
-            *first_word = false;
+            emit_spelled_abbreviation(p, t, &letter_ipa, result,
+                                      first_word);
             consumed = true;
-            chars_free(&combined_ipa);
-            chars_free(&combined_codes);
         } else if (letter_ipa.count == 1) {
             ph_codes->count = 0;
             chars_put(ph_codes, letter_ipa.data[0].data,
@@ -9701,9 +10968,9 @@ static void process_word_token(struct phonemizer * p,
                                const struct tokens * ts,
                                bool is_isolated_word,
                                size_t last_word_ti, bool is_en_us,
-                               int * expect_past,
-                               int * expect_noun,
-                               int * expect_verb,
+                               int32_t * expect_past,
+                               int32_t * expect_noun,
+                               int32_t * expect_verb,
                                struct chars * result,
                                bool * first_word) {
     bool consumed = false;
@@ -9797,7 +11064,7 @@ static void phonemize_text(struct phonemizer * p,
         struct tokens ts = {0};
         tokenize(text, tn, &ts);
         bool first_word = true;
-        int word_token_count = 0;
+        int32_t word_token_count = 0;
         size_t last_word_ti = (size_t)-1;
         for (size_t tii = 0; tii < ts.count; tii++) {
             if (ts.data[tii].is_word) {
@@ -9806,9 +11073,9 @@ static void phonemize_text(struct phonemizer * p,
             }
         }
         bool is_isolated_word = (word_token_count == 1);
-        int expect_past = 0;
-        int expect_noun = 0;
-        int expect_verb = 0;
+        int32_t expect_past = 0;
+        int32_t expect_noun = 0;
+        int32_t expect_verb = 0;
         for (size_t ti = 0; ti < ts.count; ti++) {
             if (ts.data[ti].is_word) {
                 process_word_token(p, &ts.data[ti], &ti, &ts,
@@ -9995,7 +11262,6 @@ static void * get_chars_key(struct map * m, const char * k) {
 static void test_state_init_and_roundtrip(void) {
     struct phonemizer p = {0};
     phonemizer_state_init(&p);
-
     // smap put/get: dict["hello"] = "hElO"
     struct chars val = {0};
     chars_puts(&val, "hElO");
@@ -10004,19 +11270,16 @@ static void test_state_init_and_roundtrip(void) {
     struct chars * got = get_chars_key(&p.dict, "hello");
     assert(got != NULL && strcmp(got->data, "hElO") == 0);
     assert(get_chars_key(&p.dict, "missing") == NULL);
-
     // set membership: pastf_words += "was"
     char one = 1;
     put_chars_key(&p.pastf_words, "was", &one);
     assert(get_chars_key(&p.pastf_words, "was") != NULL);
     assert(get_chars_key(&p.pastf_words, "ran") == NULL);
-
     // imap: stress_pos["construct"] = 2
-    int two = 2;
+    int32_t two = 2;
     put_chars_key(&p.stress_pos, "construct", &two);
-    int * sp = get_chars_key(&p.stress_pos, "construct");
+    int32_t * sp = get_chars_key(&p.stress_pos, "construct");
     assert(sp != NULL && *sp == 2);
-
     // pmap: phrase_split_dict["most of"] = {"moUst", "@v"}
     struct strpair sp_val = {0};
     chars_puts(&sp_val.a, "moUst");
@@ -10027,7 +11290,6 @@ static void test_state_init_and_roundtrip(void) {
     assert(pg != NULL);
     assert(strcmp(pg->a.data, "moUst") == 0);
     assert(strcmp(pg->b.data, "@v") == 0);
-
     // strpairs (compound_prefixes) round-trip.
     struct strpair cp = {0};
     chars_puts(&cp.a, "under");
@@ -10037,11 +11299,9 @@ static void test_state_init_and_roundtrip(void) {
     assert(p.compound_prefixes.count == 1);
     assert(strcmp(p.compound_prefixes.data[0].a.data, "under") == 0);
     assert(strcmp(p.compound_prefixes.data[0].b.data, "Vnd3") == 0);
-
     // dialect chars round-trip.
     chars_puts(&p.dialect, "en-us");
     assert(strcmp(p.dialect.data, "en-us") == 0);
-
     phonemizer_state_free(&p);
     // After free, the maps + strpairs are all empty.
     assert(p.dict.capacity == 0 && p.dict.count == 0);
@@ -10120,20 +11380,20 @@ static void test_suffix_decision_helpers(void) {
     // determine_alt_flags: explicit > 0 short-circuits the state lookup.
     struct phonemizer p = {0};
     phonemizer_state_init(&p);
-    assert(determine_alt_flags(&p, "any", 3, 7) == 7);  // explicit wins
-    assert(determine_alt_flags(&p, "any", 3, 0) == 0);  // explicit wins even when 0
+    // An explicit value wins over the state lookup, 0 included.
+    assert(determine_alt_flags(&p, "any", 3, 7) == 7);
+    assert(determine_alt_flags(&p, "any", 3, 0) == 0);
     assert(determine_alt_flags(&p, "missing", 7, -1) == 0); // lookup miss
     // Seed word_alt_flags["compact"] = 4 (bit-mask, e.g. $alt3).
     struct chars k = {0};
     chars_puts(&k, "compact");
-    int v = 4;
+    int32_t v = 4;
     map_put(&p.word_alt_flags, &k, &v);
     chars_free(&k);
     assert(determine_alt_flags(&p, "compact", 7, -1) == 4);
     // Case-folding: "COMPACT" lowercases to "compact".
     assert(determine_alt_flags(&p, "COMPACT", 7, -1) == 4);
     phonemizer_state_free(&p);
-
     // devoice_ed_suffix: "d#" + stem ending in unvoiced -> "t";
     // "d#" + stem ending in t/d -> "I#d"; "d#" + voiced/vowel -> unchanged.
     struct chars sfx = {0};
@@ -10158,7 +11418,6 @@ static void test_suffix_decision_helpers(void) {
     devoice_ed_suffix("kik", 3, &sfx);
     assert(strcmp(sfx.data, "z") == 0);
     chars_free(&sfx);
-
     // should_use_magic_e_for_cvc_stem: tests cover the three OR-arms
     // (stressed_at_end, no_explicit_stress, last_vowel_is_full).
     // Empty base_ph -> true (caller's outer flow decides).
@@ -10174,7 +11433,6 @@ static void test_suffix_decision_helpers(void) {
     assert(should_use_magic_e_for_cvc_stem("'ak@t", 5, "I@", 2) == false);
     // Full last vowel ("a" not in "I@") -> last_vowel_is_full TRUE.
     assert(should_use_magic_e_for_cvc_stem("'kAt", 4, "I@", 2) == true);
-
     // simplify_syllabic_l_for_ing: "@L" + vowel-then-l base -> "@l".
     struct chars sph = {0};
     chars_puts(&sph, "h@L");
@@ -10221,9 +11479,8 @@ static void test_parse_helpers(void) {
     assert(out.count == 2);
     charsv_clear(&out);
     assert(out.count == 0 && out.data == NULL);
-
     // parse_leading_dialect: "?3 rest"  -> cond=3, negated=false.
-    int cond = 99;
+    int32_t cond = 99;
     bool neg = true;
     struct chars rem = {0};
     parse_leading_dialect("?3 a b", 6, &cond, &neg, &rem);
@@ -10248,7 +11505,6 @@ static void test_parse_helpers(void) {
     assert(cond == 0 && neg == false);
     assert(strcmp(rem.data, "xyz") == 0);
     chars_free(&rem);
-
     // strip_comment_and_trim: cuts at first "//", trims result.
     struct chars cleaned = {0};
     strip_comment_and_trim("hello // comment", 16, &cleaned);
@@ -10345,7 +11601,7 @@ static void test_load_dictionary(void) {
     // entry stored it in verb_dict, so that survives; dict has no
     // construct entry.
     assert(smap_get(&p.dict, "construct", 9) == NULL);
-    int * af = imap_get(&p.word_alt_flags, "construct", 9);
+    int32_t * af = imap_get(&p.word_alt_flags, "construct", 9);
     assert(af != NULL && (*af & (1 << 2)) != 0);  // alt3 bit
     phonemizer_state_free(&p);
 }
@@ -10378,21 +11634,18 @@ static void test_load_rules(void) {
     chars_puts(&p.dialect, "en-us");
     bool ok = load_rules(&p, path);
     assert(ok);
-
     // L-group: "ab", "cd", "ef" (the "//" item is dropped).
     struct charsv * l1 = &p.rules.groups.lgroups[1];
     assert(l1->count == 3);
     assert(l1->data[0].count == 2 && memcmp(l1->data[0].data, "ab", 2) == 0);
     assert(l1->data[1].count == 2 && memcmp(l1->data[1].data, "cd", 2) == 0);
     assert(l1->data[2].count == 2 && memcmp(l1->data[2].data, "ef", 2) == 0);
-
     // Replacement section.
     assert(p.rules.replacements.count == 2);
     assert(strcmp(p.rules.replacements.data[0].from.data, "foo") == 0);
     assert(strcmp(p.rules.replacements.data[0].to.data,   "bar") == 0);
     assert(strcmp(p.rules.replacements.data[1].from.data, "x") == 0);
     assert(strcmp(p.rules.replacements.data[1].to.data,   "y") == 0);
-
     // Group "a": plain rule + left-ctx + prefix + suffix +
     // en_us-conditional. Total 5 (the ?!3 and $verb are skipped).
     struct chars va = chars_view("a", 1);
@@ -10416,19 +11669,16 @@ static void test_load_rules(void) {
     // Rule 4: ?3 en-us conditional fires on en-us.
     assert(ra->data[4].condition == 3);
     assert(strcmp(ra->data[4].phonemes.data, "en_us_a") == 0);
-
     // Group "b" should have 1 rule.
     struct chars vb = chars_view("b", 1);
     struct rules * rb = map_get(&p.rules.rule_groups, &vb);
     assert(rb != NULL && rb->count == 1);
     assert(strcmp(rb->data[0].phonemes.data, "b") == 0);
-
     // Letter groups (SetLetterBits).
     assert(p.rules.groups.groupA['a'] && p.rules.groups.groupA['e']);
     assert(!p.rules.groups.groupA['b'] && !p.rules.groups.groupA['y']);
     assert(p.rules.groups.groupY['y']);   // English includes 'y'
     assert(p.rules.groups.groupC['b'] && !p.rules.groups.groupC['a']);
-
     phonemizer_state_free(&p);
 }
 
@@ -10445,7 +11695,6 @@ static void test_rule_core_leaves(void) {
     // "z" -> "ZZZ" (longer)
     chars_puts(&r.from, "z"); chars_puts(&r.to, "ZZZ");
     replaces_put(&reps, r); r = (struct replace_rule){0};
-
     struct chars buf = {0};
     chars_puts(&buf, "foo abc z");
     apply_replacements(&buf, &reps);
@@ -10462,7 +11711,6 @@ static void test_rule_core_leaves(void) {
     assert(strcmp(buf.data, "qqq") == 0);
     chars_free(&buf);
     replaces_clear(&reps);
-
     // match_lgroup_at: longest-match across items, case-insensitive.
     struct charsv lg = {0};
     struct chars t = {0};
@@ -10618,8 +11866,8 @@ static void test_match_rule_and_find_best(void) {
     struct rules * ra = map_get(&p.rules.rule_groups, &va);
     assert(ra != NULL && ra->count == 2);
     struct chars phon = {0};
-    int adv = 0, dfs = -1, dfc = 0;
-    int sc = match_rule(&p.rules, &ra->data[0], "abc", 3, 0,
+    int32_t adv = 0, dfs = -1, dfc = 0;
+    int32_t sc = match_rule(&p.rules, &ra->data[0], "abc", 3, 0,
                         &phon, &adv, &dfs, &dfc, 1, NULL, 0, 0,
                         NULL, 0, false);
     assert(sc >= 0);
@@ -10660,7 +11908,6 @@ static void test_stress_helpers(void) {
     assert(find_last_stressable_vowel("a\x01" "b", 3) == 0);
     // Empty input.
     assert(find_last_stressable_vowel("", 0) == -1);
-
     // apply_stress_prev: emit "=foo" + phonemes "ka" -> emit "foo",
     // phonemes "k'a".
     struct chars emit = {0};
@@ -10818,7 +12065,7 @@ static void test_word_to_phonemes_real(void) {
         "hello", "world", "cat", "walking", "studies"
     };
     struct chars ipa = {0};
-    for (int wi = 0; wi < 5; wi++) {
+    for (int32_t wi = 0; wi < 5; wi++) {
         out.count = 0; if (out.data) out.data[0] = '\0';
         word_to_phonemes(&p, sample_words[wi],
                          strlen(sample_words[wi]), &out);
@@ -10845,7 +12092,6 @@ static void test_prosody_steps(void) {
     chars_puts(&ph, "inkmen");
     apply_velar_nasal_assimilation(&ph);
     assert(strcmp(ph.data, "iNkmen") == 0);
-
     // Happy tensing: word-final %I -> i.
     ph.count = 0; if (ph.data) ph.data[0] = '\0';
     chars_puts(&ph, "h@p%I");
@@ -10878,7 +12124,6 @@ static void test_prosody_steps(void) {
     chars_puts(&ph, "heI");
     apply_happy_tensing(&ph);
     assert(strcmp(ph.data, "heI") == 0);
-
     // Vowel reduction: %A: -> %@.
     ph.count = 0; if (ph.data) ph.data[0] = '\0';
     chars_puts(&ph, "k%A:nt");
@@ -10893,7 +12138,6 @@ static void test_prosody_steps(void) {
     chars_puts(&ph, "k%Ant");
     apply_vowel_reduction(&ph);
     assert(strcmp(ph.data, "k%@nt") == 0);
-
     // LOT+R merge: 0r -> O:r.
     ph.count = 0; if (ph.data) ph.data[0] = '\0';
     chars_puts(&ph, "fo0rst");
@@ -10904,13 +12148,11 @@ static void test_prosody_steps(void) {
     chars_puts(&ph, "0r0r");
     apply_lot_plus_r_merge(&ph);
     assert(strcmp(ph.data, "O:rO:r") == 0);
-
     // Strip morpheme-schwa-r: @-r -> r.
     ph.count = 0; if (ph.data) ph.data[0] = '\0';
     chars_puts(&ph, "av@-rIdZ");
     strip_morpheme_schwa_r(&ph);
     assert(strcmp(ph.data, "avrIdZ") == 0);
-
     // apply_bare_schwa_to_rhotic: a#r pre-pass + @r -> 3 absorb.
     ph.count = 0; if (ph.data) ph.data[0] = '\0';
     chars_puts(&ph, "a#raUnd");
@@ -10929,7 +12171,6 @@ static void test_prosody_steps(void) {
     chars_puts(&ph, "ho@r");          // o-@-r where @ follows o
     apply_bare_schwa_to_rhotic(&ph);
     assert(strcmp(ph.data, "ho@r") == 0);  // is_diphthong protects
-
     // apply_linking_r: 3 + vowel -> insert r.
     ph.count = 0; if (ph.data) ph.data[0] = '\0';
     chars_puts(&ph, "f3a");
@@ -10961,7 +12202,7 @@ static void test_public_api_end_to_end(void) {
         "U.S.A.",
         NULL
     };
-    for (int i = 0; sentences[i] != NULL; i++) {
+    for (int32_t i = 0; sentences[i] != NULL; i++) {
         char * ipa = phonemizer_phonemize(h, sentences[i]);
         assert(ipa != NULL);
         fprintf(stderr, "[api]  %-25s -> %s\n", sentences[i], ipa);
@@ -10970,7 +12211,7 @@ static void test_public_api_end_to_end(void) {
     phonemizer_destroy(h);
 }
 
-int main(int argc, char ** argv) {
+int32_t main(int32_t argc, char ** argv) {
     (void)argc; (void)argv;
     test_leaf_helpers();
     test_phoneme_utils();
